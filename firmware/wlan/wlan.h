@@ -97,6 +97,7 @@ struct wlan_lan {
 	u32 pool;			/* token buffers, uncached */
 	u32 pool_bus;			/* host physical */
 	u32 tokens;			/* 0: no LAN to WiFi */
+	u32 start[WLAN_LAN_RINGS];	/* the frame engine's index at attach */
 };
 
 struct wlan_radio {

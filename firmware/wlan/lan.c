@@ -111,8 +111,10 @@ int lan_attach(struct wlan_radio *r, u32 base, u32 tokens)
 		REG32(TDMA_RX(k)) = wlan_bus(l->desc[k]);
 		REG32(TDMA_RX(k) + 4) = (REG32(TDMA_RX(k) + 4) & RING_CNT_KEEP) |
 					WLAN_LAN_RING;
-		REG32(TDMA_RX(k) + 8) = WLAN_LAN_RING - 1;
-		REG32(TDMA_RX(k) + 0xC) = 0;
+		/* the dma index survives a detach: carry on from it */
+		l->start[k] = REG32(TDMA_RX(k) + 0xC) % WLAN_LAN_RING;
+		REG32(TDMA_RX(k) + 8) = l->start[k] ? l->start[k] - 1 :
+				       WLAN_LAN_RING - 1;
 	}
 	REG32(TDMA_RX_CFG) |= TDMA_RX_CFG_EN;
 	REG32(TDMA_FC_CFG0) |= TDMA_FC_EN;
@@ -136,7 +138,7 @@ void lan_reset(struct wlan_radio *r)
 	u32 k;
 
 	for (k = 0; k < WLAN_LAN_RINGS; k++)
-		ridx[k] = 0;
+		ridx[k] = r->lan.start[k];
 }
 
 /* no more frames from the frame engine: its rings go with the detach */

@@ -1035,7 +1035,10 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	htxf_stat[0] = htxf_stat[1] = htxf_bad = htxf_other = 0;
 	chip.other_sent[0] = chip.other_sent[1] = chip.others = 0;
 	chip.lan_taken = chip.lan_bad = chip.txf_hold = 0;
-	lan_didx[0] = lan_didx[1] = lan_sent = 0;
+	/* the frame engine carries on where the last session left it */
+	lan_didx[0] = REG32(TDMA_RX(0) + 0xC);
+	lan_didx[1] = REG32(TDMA_RX(1) + 0xC);
+	lan_sent = 0;
 	chip.tx_taken = chip.tx_bad = 0;
 	/* link 0 on window 1: its span covers rx band 0 and RXDMAD_C */
 	CHECK(REG32(NPU_MMIO_BASE + 0x13008) <= rsp.ring_base[0] &&
