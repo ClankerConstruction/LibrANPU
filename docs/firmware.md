@@ -85,6 +85,27 @@ flowchart LR
 - Counters (`GET_STATS`): completions per indication reason, stale drops, host ring, refills per
   band, PPE sent/bound/unbound/full, unbound returns per CPU reason.
 
+### Host tx
+
+```mermaid
+flowchart LR
+  WD["WiFi driver data queue<br/>(its own descriptors,<br/>TXWI buffers mapped)"] -->|"host adaptor tx ring 5/6:<br/>16 B chip descriptors"| TX["tx task (hart 2)"]
+  TX -->|"copy 16 B,<br/>control word last"| RING["chip tx ring 18/21<br/>(NPU SRAM, 1024)"]
+  RING -->|"TXD + payload<br/>from host DRAM"| CHIP["MT7990"]
+  CHIP -->|"done bit in SRAM"| TX
+  CHIP -->|"TXFREE (host ring)"| WD
+```
+
+- A host tx entry is the chip descriptor the WiFi driver would write: TXWI address, `0x4C4048` (76-byte TXWI,
+  72-byte head, last), frame head address, info. Nothing but the descriptor is copied.
+- The host entry is free as soon as it is copied; the consumer index is published per batch with
+  the chip's cpu index.
+- Slots come back by the chip's done bit in SRAM (no bus read); 8 slots stay free ahead of its
+  descriptor prefetch; a descriptor whose done bit reads back set is written again (`tx_rewrite`).
+- Start reads the chip's dma index once and fails past the ring. Stop waits for the chip to take
+  every slot, 50 ms at most; the audit reports `tx_chip` and `tx_host` left behind.
+- TXFREE stays on the host until NPU tokens exist.
+
 ## Host channel
 
 | object | where | writer |

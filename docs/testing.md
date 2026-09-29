@@ -59,3 +59,18 @@ Zero-copy rx (commit `3ca6361`, 5 GHz EHT160 2SS client, 3 interleaved runs of 1
 | stopped socket, 1345 lent | the WiFi driver and `libranpu` reloaded under it: 1830 ids held (915 pages); after the socket closed all came back, NPU `buf_returned` = host copied + reclaimed |
 | lend limit | a stopped socket holding 9 MB reaches 4608 of 4608; other clients keep their rate by copy, the chip never runs short (`buf_empty` 0) |
 | detach audit | no lost or expired ids |
+
+Host tx through the NPU (commit `5a3cac7`), DUT transmits, 10 s TCP, NPU tx
+vs the host driving the same rings in the same session:
+
+| path | client | NPU tx | host rings |
+|---|---|---|---|
+| bridged wired peer to client | 5 GHz EHT160 | 742, 896 Mb/s at 0.098 % CPU per Mb/s | 918, 763 at 0.098 |
+| DUT socket to client | 5 GHz EHT160 | 917, 894 at 0.073 | 939, 899 at 0.074 |
+| wired peer to client, UDP ceiling | 2.4 GHz | 91-124 Mb/s | 85-135 |
+
+| check | result |
+|---|---|
+| frames up to 2000 B (client MTU) | pass on both bands |
+| L1 SER idle and under a 900 Mb/s tx flow | recovers; under traffic the stop times out (chip paused), 8 chip and 31 host descriptors dropped, flow back within 2 s |
+| detach audit after traffic | clean |
