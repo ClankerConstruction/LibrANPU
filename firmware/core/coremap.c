@@ -8,6 +8,7 @@
 #include "core/task.h"
 #include "ctl/ctl.h"
 #include "dbg/probe.h"
+#include "wlan/wlan.h"
 
 int coremap_build(void)
 {
@@ -20,6 +21,17 @@ int coremap_build(void)
 	if (err)
 		return err;
 
+#ifdef CONFIG_WLAN
+	/* rro31 two-band: rx, host and buffer each own a hart */
+	if (!err)
+		err = task_add(1, LIBRANPU_TASK_RX, wlan_rx_task, &wlan_radio, 4);
+	if (!err)
+		err = task_add(3, LIBRANPU_TASK_HOST, wlan_host_task,
+			       &wlan_radio, 4);
+	if (!err)
+		err = task_add(4, LIBRANPU_TASK_BUF, wlan_buf_task, &wlan_radio,
+			       4);
+#endif
 #ifdef CONFIG_DBG
 	for (h = 0; h < SOC_HARTS && !err; h++)
 		err = task_add(h, LIBRANPU_TASK_DBG, probe_task,

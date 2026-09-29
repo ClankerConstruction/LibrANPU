@@ -266,6 +266,132 @@ struct libranpu_dbg_probe_rsp {
 };
 
 /* ------------------------------------------------------------------ */
+/* WLAN service                                                        */
+
+enum libranpu_wlan_op {
+	LIBRANPU_WLAN_ATTACH,
+	LIBRANPU_WLAN_START,
+	LIBRANPU_WLAN_STOP,
+	LIBRANPU_WLAN_DETACH,
+	LIBRANPU_WLAN_FORCE_HOST,
+};
+
+enum libranpu_wlan_backend {
+	LIBRANPU_WLAN_RRO31,
+	LIBRANPU_WLAN_RRO3,
+	LIBRANPU_WLAN_BA,
+};
+
+/* rings of the WiFi chip the NPU drives, and host rings it talks to */
+enum libranpu_ring_kind {
+	LIBRANPU_RING_NONE,
+	LIBRANPU_RING_RX_DATA,		/* chip rx ring the NPU refills */
+	LIBRANPU_RING_RXDMAD_C,		/* chip rx completion ring */
+	LIBRANPU_RING_TX_DATA,		/* chip tx ring the NPU fills */
+	LIBRANPU_RING_TXFREE,		/* chip rx ring of tx free reports */
+	LIBRANPU_RING_HOST_RX,		/* host adaptor rx ring: frames to host */
+	LIBRANPU_RING_HOST_RET,		/* host adaptor tx ring: rx ids back */
+	LIBRANPU_RING_HOST_TX,		/* host adaptor tx ring: host frames */
+	LIBRANPU_RING_HOST_TXFREE,	/* host adaptor rx ring: tx status */
+};
+
+#define LIBRANPU_WLAN_RINGS		12
+
+/*
+ * Chip rings: regs is the bus address of the ring's register block,
+ * base is 0 (the NPU places them in its SRAM). Host rings: regs is the
+ * host adaptor ring number, base the host memory.
+ */
+struct libranpu_wlan_ring {
+	__u8 kind;			/* enum libranpu_ring_kind */
+	__u8 band;
+	__u8 link;			/* PCIe link of a chip ring */
+	__u8 rsv;
+	__le16 entries;
+	__le16 entry_size;
+	__le32 regs;
+	__le32 base;
+};
+
+#define LIBRANPU_WLAN_F_FORCE_HOST	BIT(0)
+
+struct libranpu_wlan_attach {
+	__u8 radio;
+	__u8 backend;			/* enum libranpu_wlan_backend */
+	__u8 bands;
+	__u8 nrings;
+	__le32 flags;			/* LIBRANPU_WLAN_F_* */
+	__u8 link_win[2];		/* inbound window of each PCIe link */
+	__le16 rsv;
+	__le32 pool_base;		/* rx buffers: base + id * 2048 */
+	__le32 pool_ids;
+	__le16 rx_mod_frames;		/* host rx line after this many */
+	__le16 rx_mod_us;		/* or this long after the first */
+	struct libranpu_wlan_ring ring[LIBRANPU_WLAN_RINGS];
+};
+
+/* bus address of each chip ring the NPU placed, 0 for host rings */
+struct libranpu_wlan_attach_rsp {
+	__le32 ring_base[LIBRANPU_WLAN_RINGS];
+};
+
+#define LIBRANPU_WLAN_RX		BIT(0)
+#define LIBRANPU_WLAN_TX		BIT(1)
+
+struct libranpu_wlan_ctl {
+	__u8 radio;
+	__u8 dir;			/* LIBRANPU_WLAN_RX | _TX */
+	__u8 on;			/* FORCE_HOST */
+	__u8 rsv;
+};
+
+/* STOP and DETACH answer where every rx buffer id is */
+struct libranpu_wlan_audit {
+	__le32 free;			/* in the pool */
+	__le32 chip;			/* under chip rx descriptors */
+	__le32 host;			/* delivered, not returned */
+	__le32 transit;			/* between NPU tasks */
+	__le32 lost;			/* none of the above */
+	__le32 expired;			/* bounded waits that ran out */
+};
+
+#define LIBRANPU_RX_BUF_SIZE		2048
+#define LIBRANPU_RX_HEADROOM		192
+
+/*
+ * Host rx ring entry, 24 bytes. The NPU writes words 1-3, then word 0.
+ * The buffer is pool_base + id * 2048 + offset.
+ */
+struct libranpu_host_rx {
+	__le32 ctrl;
+	__le32 info;
+	__le32 data;
+	__le32 buf;
+	__le32 rsv[2];
+};
+
+#define LIBRANPU_HRX_DONE		BIT(0)
+#define LIBRANPU_HRX_SEG_LEN		GENMASK(14, 1)
+#define LIBRANPU_HRX_LEN		GENMASK(28, 15)
+#define LIBRANPU_HRX_LAST		BIT(29)
+#define LIBRANPU_HRX_FOE		GENMASK(15, 0)
+#define LIBRANPU_HRX_CRSN		GENMASK(20, 16)
+#define LIBRANPU_HRX_REASON		GENMASK(24, 21)	/* enum libranpu_hrx_reason */
+#define LIBRANPU_HRX_SEGS		GENMASK(31, 29)
+#define LIBRANPU_HRX_WCID		GENMASK(11, 0)
+#define LIBRANPU_HRX_BAND		GENMASK(13, 12)
+#define LIBRANPU_HRX_ID			GENMASK(15, 0)
+#define LIBRANPU_HRX_OFFSET		GENMASK(31, 16)
+
+enum libranpu_hrx_reason {
+	LIBRANPU_HRX_FORCED,		/* force host */
+	LIBRANPU_HRX_CHIP,		/* the chip asked for the host */
+	LIBRANPU_HRX_ERROR,		/* descriptor error */
+	LIBRANPU_HRX_RAW,		/* no ethernet header */
+	LIBRANPU_HRX_PPE,		/* the PPE did not forward it */
+};
+
+/* ------------------------------------------------------------------ */
 /* Event ring: NPU to host                                             */
 
 #define LIBRANPU_EVT_SIZE		32
@@ -409,6 +535,10 @@ LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_evt_fatal) <=
 		    LIBRANPU_EVT_PAYLOAD);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_dbg_hart) == 48);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_dbg_task) == 32);
+LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_wlan_ring) == 16);
+LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_wlan_attach) <=
+		    LIBRANPU_CMD_PAYLOAD);
+LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_host_rx) == 24);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_dbg_block) <=
 		    LIBRANPU_DBG_SIZE);
 

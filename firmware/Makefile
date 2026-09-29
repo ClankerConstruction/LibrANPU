@@ -20,6 +20,7 @@ ARCH := -march=rv32imac_zicsr_zifencei -mabi=ilp32
 CPPFLAGS := -Iinclude -I../include -I. -Isoc/$(SOC) -Iplat/$(PLAT) \
 	-I$(O)/gen
 CPPFLAGS-$(CONFIG_DBG) += -DCONFIG_DBG
+CPPFLAGS-$(CONFIG_WLAN) += -DCONFIG_WLAN
 CFLAGS := $(ARCH) -O2 -g -std=gnu11 -ffreestanding -fno-common \
 	-ffunction-sections -fdata-sections -fno-strict-aliasing \
 	-Wall -Wextra -Wno-unused-parameter -Werror
@@ -30,6 +31,7 @@ SRCS := arch/rv32/crt0.S arch/rv32/trap.S \
 	$(wildcard core/*.c ctl/*.c lib/*.c) \
 	dbg/dbgblk.c plat/$(PLAT)/plat.c
 SRCS-$(CONFIG_DBG) += dbg/probe.c
+SRCS-$(CONFIG_WLAN) += $(wildcard wlan/*.c)
 SRCS += $(SRCS-y)
 OBJS := $(patsubst %,$(O)/%.o,$(basename $(SRCS)))
 
@@ -42,12 +44,13 @@ IMG := $(O)/$(SOC)-libranpu.bin
 all: $(IMG)
 
 $(IMG): $(O)/firmware.elf scripts/mkimage.py
-	python3 scripts/mkimage.py $< $@ --soc $(SOC_ID) --harts $(SOC_HARTS) \
+	@python3 scripts/mkimage.py $< $@ --soc $(SOC_ID) --harts $(SOC_HARTS) \
 		--dbg-offset $(SOC_DBG)
-	$(OBJDUMP) -d $< > $(O)/firmware.dis
+	@$(OBJDUMP) -d $< > $(O)/firmware.dis
 
 $(O)/firmware.elf: $(OBJS) $(O)/link.ld
-	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
+	@echo "  LD $@"
+	@$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
 
 $(O)/link.ld: arch/rv32/link.ld.S soc/$(SOC)/soc.h plat/$(PLAT)/map.h
 	@mkdir -p $(dir $@)
@@ -61,11 +64,13 @@ $(O)/gen/build_id.h: FORCE
 
 $(O)/%.o: %.c $(O)/gen/build_id.h
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CPPFLAGS-y) -include build_id.h $(CFLAGS) -MMD -c $< -o $@
+	@echo "  CC $<"
+	@$(CC) $(CPPFLAGS) $(CPPFLAGS-y) -include build_id.h $(CFLAGS) -MMD -c $< -o $@
 
 $(O)/%.o: %.S
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CPPFLAGS-y) $(ARCH) -MMD -c $< -o $@
+	@echo "  AS $<"
+	@$(CC) $(CPPFLAGS) $(CPPFLAGS-y) $(ARCH) -MMD -c $< -o $@
 
 clean:
 	rm -rf build

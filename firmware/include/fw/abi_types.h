@@ -16,5 +16,8 @@ typedef unsigned long long __le64;
 #ifndef BIT
 #define BIT(n)		(1u << (n))
 #endif
+#define GENMASK(h, l)	((~0u >> (31 - (h))) & (~0u << (l)))
+#define FIELD_PREP(m, v)	(((unsigned int)(v) << __builtin_ctz(m)) & (m))
+#define FIELD_GET(m, v)		(((v) & (m)) >> __builtin_ctz(m))
 
 #endif

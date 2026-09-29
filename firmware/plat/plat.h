@@ -34,6 +34,9 @@ u32 plat_hart_pc(u32 hart);
 u32 plat_doorbell(void);
 void plat_notify_host(void);
 
+/* PCIe link's inbound window onto NPU SRAM, bus addresses */
+void plat_pcie_window(u32 win, u32 base, u32 end);
+
 /* hart wake source: armed by the hart, raised by another hart */
 void plat_wake_arm(u32 hart);
 void plat_wake_disarm(u32 hart);

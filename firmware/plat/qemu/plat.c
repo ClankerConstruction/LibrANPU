@@ -97,3 +97,10 @@ u32 plat_wake_ack(u32 hart)
 	REG32(CLINT_MSIP(hart)) = 0;
 	return 1;
 }
+
+/* recorded where the host model can check it */
+void plat_pcie_window(u32 win, u32 base, u32 end)
+{
+	REG32(NPU_REG(0x13000 + 8 * win)) = base;
+	REG32(NPU_REG(0x13004 + 8 * win)) = end;
+}

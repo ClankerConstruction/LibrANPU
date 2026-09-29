@@ -9,6 +9,7 @@
 #include "ctl/evt.h"
 #include "dbg/dbg.h"
 #include "plat/plat.h"
+#include "wlan/wlan.h"
 
 /* harts get this long to park before RESET answers anyway */
 #define RESET_PARK_US		50000
@@ -104,6 +105,9 @@ int ctl_task(struct task *t, int budget)
 		return 1;
 	}
 	n = cmd_poll(budget);
+#ifdef CONFIG_WLAN
+	wlan_ctl_poll();
+#endif
 	evt_flush(false);
 	return n;
 }

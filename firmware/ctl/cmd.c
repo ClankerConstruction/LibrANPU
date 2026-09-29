@@ -7,6 +7,7 @@
 #include "ctl/evt.h"
 #include "dbg/dbg.h"
 #include "plat/plat.h"
+#include "wlan/wlan.h"
 
 /* read cmd_prod at least this often, doorbell or not */
 #define CMD_SAFETY_PASSES	1024
@@ -25,6 +26,9 @@ static struct cmd_ctx cur;
 
 static const struct cmd_service *const services[] = {
 	[LIBRANPU_SVC_CTL] = &ctl_service,
+#ifdef CONFIG_WLAN
+	[LIBRANPU_SVC_WLAN] = &wlan_service,
+#endif
 #ifdef CONFIG_DBG
 	[LIBRANPU_SVC_DBG] = &dbg_service,
 #endif

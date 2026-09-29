@@ -159,3 +159,11 @@ u32 plat_wake_ack(u32 hart)
 		REG32(PLIC_CLAIM) = src;
 	return src;
 }
+
+void plat_pcie_window(u32 win, u32 base, u32 end)
+{
+	u32 reg = win ? SOC_PCIE_WIN1 : SOC_PCIE_WIN0;
+
+	REG32(reg) = base;
+	REG32(reg + 4) = end;
+}
