@@ -280,7 +280,10 @@ static int wlan_start(struct cmd_ctx *c)
 	for (b = 0; b < WLAN_BANDS && r->tx_on; b++) {
 		if (!r->tx[b].desc)
 			continue;
-		r->tx_start[b] = REG32(r->tx[b].regs + 0xC) % r->tx[b].entries;
+		r->tx_start[b] = REG32(r->tx[b].regs + 0xC);
+		/* the host did not reset the ring */
+		if (r->tx_start[b] >= r->tx[b].entries)
+			return -EIO;
 		REG32(r->tx[b].regs + 8) = r->tx_start[b];
 	}
 	wmb();
