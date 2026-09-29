@@ -354,6 +354,7 @@ struct libranpu_wlan_audit {
 	__le32 transit;			/* between NPU tasks */
 	__le32 lost;			/* none of the above */
 	__le32 expired;			/* bounded waits that ran out */
+	__le32 fe;			/* sent to the frame engine, not back */
 };
 
 /* since attach; each field is counted by one NPU task */
@@ -370,6 +371,11 @@ struct libranpu_wlan_stats {
 	__le32 buf_returned;		/* ids back from the host */
 	__le32 buf_bad_ret;
 	__le32 buf_empty;		/* refills the pool could not cover */
+	__le32 ppe_tx;			/* frames to the frame engine */
+	__le32 ppe_full;		/* its ring was full: rx waited */
+	__le32 ppe_bound;		/* forwarded, id back */
+	__le32 ppe_unbound;		/* back to the host with FOE, CRSN */
+	__le32 ppe_bad_id;
 };
 
 #define LIBRANPU_RX_BUF_SIZE		2048
@@ -406,6 +412,7 @@ enum libranpu_hrx_reason {
 	LIBRANPU_HRX_ERROR,		/* descriptor error */
 	LIBRANPU_HRX_RAW,		/* no ethernet header */
 	LIBRANPU_HRX_PPE,		/* the PPE did not forward it */
+	LIBRANPU_HRX_CHAIN,		/* more than one segment */
 };
 
 /* ------------------------------------------------------------------ */

@@ -6,7 +6,7 @@
  */
 
 #include "fw/csr.h"
-#include "wlan/wlan.h"
+#include "wlan/ppe.h"
 
 #define RET_PROD		8	/* host writes */
 #define RET_CONS		0xC	/* we write */
@@ -132,7 +132,9 @@ static void buf_audit(struct wlan_radio *r)
 	a->chip = chip;
 	a->host = READ_ONCE(r->delivered) - bs.returned;
 	a->transit = spsc_avail(&bs.from_rx, 1) + spsc_avail(&bs.from_host, 1);
-	a->lost = r->pool_ids - a->free - a->chip - a->host - a->transit;
+	a->fe = ppe_held(r);
+	a->lost = r->pool_ids - a->free - a->chip - a->host - a->transit -
+		  a->fe;
 }
 
 int wlan_buf_task(struct task *t, int budget)
@@ -152,6 +154,7 @@ int wlan_buf_task(struct task *t, int budget)
 	n = take_host(r);
 	n += take_spsc(r, &bs.from_rx);
 	n += take_spsc(r, &bs.from_host);
+	n += ppe_take(r, budget * 32, st == WLAN_STOPPING);
 
 	if (st == WLAN_RUNNING) {
 		for (b = 0; b < r->nbands; b++)
@@ -159,9 +162,10 @@ int wlan_buf_task(struct task *t, int budget)
 		return n;
 	}
 
-	/* stopping: account once the rx and host tasks have let go */
+	/* stopping: account once the tasks and the PPE have let go */
 	if (READ_ONCE(r->ack[WT_RX]) == WLAN_STOPPING &&
-	    READ_ONCE(r->ack[WT_HOST]) == WLAN_STOPPING && !n) {
+	    READ_ONCE(r->ack[WT_HOST]) == WLAN_STOPPING && !n &&
+	    !ppe_held(r)) {
 		take_spsc(r, &bs.from_rx);
 		take_spsc(r, &bs.from_host);
 		buf_audit(r);

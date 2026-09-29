@@ -9,6 +9,9 @@
 #define NPU_SRAM_BASE		0x8E800000
 #define NPU_CLUSTER_BASE	0x8E900000
 #define NPU_MMIO_BASE		0x8EC00000
+/* the host model plays the frame engine here */
+#define NPU_FE_BASE		0x89040000
+#define NPU_FE_POP		0	/* RAM: clearing the head pops it */
 #define FW_CODE_BASE		0x84000000
 #define FW_CODE_SIZE		0x100000
 

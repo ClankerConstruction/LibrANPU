@@ -59,17 +59,25 @@ struct wlan_host_ring {
 	u16 entry_size;
 };
 
-/* rx task to host task, 8 bytes */
+/* rx and buffer tasks to host task, 8 bytes */
 struct wlan_rx_msg {
 	u16 id;
 	u16 len;			/* 14 bits */
-	u8 flags;			/* WRX_* */
-	u8 reason;			/* enum libranpu_hrx_reason */
-	u8 band;
-	u8 rsv;
+	u32 info;			/* host rx info layout, WRX_LAST */
 };
 
-#define WRX_LAST		BIT(0)
+/* bit 31 is SEGS in the host entry: the host task replaces it */
+#define WRX_LAST		BIT(31)
+
+struct wlan_ppe {
+	u32 ring;			/* NPU SRAM, 8 bytes per slot */
+	u32 idx;			/* next slot we fill */
+	u32 room;			/* free slots at the last look */
+	u32 pending;			/* filled, not yet published */
+	volatile u16 *len;		/* per id: the host length */
+	u8 *pool;			/* rx buffers, uncached */
+};
+
 
 struct wlan_radio {
 	u32 state;			/* control writes */
@@ -89,6 +97,8 @@ struct wlan_radio {
 	struct spsc *rx2host;		/* struct wlan_rx_msg */
 	struct spsc *rx2buf;		/* ids the rx task drops */
 	struct spsc *host2buf;		/* ids the host task drops */
+	struct spsc *ppe2host;		/* struct wlan_rx_msg, unbound frames */
+	struct wlan_ppe ppe;		/* rx task sends, buffer task takes */
 
 	u32 ack[WT_MAX];		/* each task: its view of state */
 	struct libranpu_wlan_audit audit;	/* buffer task, when stopped */

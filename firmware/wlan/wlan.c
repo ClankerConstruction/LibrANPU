@@ -9,7 +9,7 @@
 #include "fw/errno.h"
 #include "fw/lib.h"
 #include "core/arena.h"
-#include "wlan/wlan.h"
+#include "wlan/ppe.h"
 
 #define HOST_RX_REGS(n)		NPU_REG(0xD180 + 0x10 * (n))
 #define HOST_TX_REGS(n)		NPU_REG(0xD080 + 0x10 * (n))
@@ -196,11 +196,16 @@ static int wlan_attach(struct cmd_ctx *c)
 				OWNER_RADIO0);
 	r->host2buf = arena_alloc(&npu_sram, spsc_bytes(WLAN_RETQ, 4), 32,
 				  OWNER_RADIO0);
-	err = stack && r->rx2host && r->rx2buf && r->host2buf ? 0 : -ENOSPC;
+	r->ppe2host = arena_alloc(&npu_sram, spsc_bytes(WLAN_RX2HOST, 8), 32,
+				  OWNER_RADIO0);
+	err = stack && r->rx2host && r->rx2buf && r->host2buf && r->ppe2host ?
+	      0 : -ENOSPC;
 	if (!err)
 		err = place_link(r, a, 0, rsp);
 	if (!err)
 		err = place_link(r, a, 1, rsp);
+	if (!err)
+		err = ppe_attach(r);
 	if (err || !r->rx[0].desc || !r->rxdmad.desc ||
 	    (r->nbands > 1 && !r->rx[1].desc)) {
 		arena_free_owner(&npu_sram, OWNER_RADIO0);
@@ -211,6 +216,7 @@ static int wlan_attach(struct cmd_ctx *c)
 	spsc_init(r->rx2host, WLAN_RX2HOST, 8);
 	spsc_init(r->rx2buf, WLAN_RETQ, 4);
 	spsc_init(r->host2buf, WLAN_RETQ, 4);
+	spsc_init(r->ppe2host, WLAN_RX2HOST, 8);
 	pool_init(&r->pool, stack, 0, a->pool_ids);
 	fill_rings(r);
 

@@ -480,6 +480,67 @@ struct chip {
 static struct chip chip;
 static u32 hrx_cons, hret_prod, host_got, host_bad;
 
+/*
+ * Frame engine model: takes the TDMA tx ring, binds one id in three,
+ * shows the rest on the buffer FIFO head until the firmware pops it.
+ */
+#define FE(off)		REG32(NPU_FE_BASE + (off))
+#define FEQ		4096
+
+static struct {
+	u32 dtx;
+	u32 q[FEQ], inf[FEQ];
+	u32 qh, qt;
+	u32 bound, unbound, bad;
+	u8 hdr[POOL_IDS];		/* per id: 802.3 offset the chip set */
+	u16 sdl[POOL_IDS];
+} fe;
+
+static void fe_step(void)
+{
+	u32 ctx = FE(0x808) % 1024, ring = FE(0x800) | 0x80000000;
+
+	while (fe.dtx != ctx && fe.qt - fe.qh < FEQ) {
+		volatile u32 *d = (u32 *)(ring + 8 * fe.dtx);
+		u32 w0 = d[0], id = (w0 >> 14) & 0x7FFF, len = w0 & 0x1FFF;
+		u32 want = fe.sdl[id] - 2 * fe.hdr[id], i;
+		const u8 *b = (u8 *)d[1];
+
+		if (id >= POOL_IDS || !(w0 & BIT(30)) ||
+		    d[1] != POOL_BASE + id * 2048 + 192 + 2 * fe.hdr[id] ||
+		    len != (want < 60 ? 60 : want)) {
+			fe.bad++;
+		} else {
+			for (i = 1; i < len; i++)
+				if (i < want ? (u8)(b[i] - b[0]) != (u8)i : b[i]) {
+					fe.bad++;
+					break;
+				}
+		}
+		fe.q[fe.qt % FEQ] = BIT(31) | (id % 3 ? 0 : BIT(30)) |
+				    0x2A << 16 | id;
+		fe.inf[fe.qt % FEQ] = 0x0F << 16 | ((id * 7) & 0x7FFF);
+		fe.qt++;
+		fe.dtx = (fe.dtx + 1) % 1024;
+		FE(0x80C) = fe.dtx;
+	}
+	/* the head is ours again once popped (cleared) */
+	if (!FE(0xFE0)) {
+		if (fe.qh == fe.qt) {
+			FE(0xFE0) = 0;
+			return;
+		}
+		if (fe.q[fe.qh % FEQ] & BIT(30))
+			fe.bound++;
+		else
+			fe.unbound++;
+		FE(0xFDC) = fe.inf[fe.qh % FEQ];
+		wmb();
+		FE(0xFE0) = fe.q[fe.qh % FEQ];
+		fe.qh++;
+	}
+}
+
 static u32 regs_of(int i)
 {
 	return CHIP_REGS + 0x10 * i;
@@ -504,13 +565,16 @@ static int chip_rx(u32 band, u32 len, bool last, u32 tag, u32 ind)
 	if (d[1] & BIT(31) || chip_rxd_used() >= RXD_ENTRIES - 8)
 		return -1;
 	id = d[2] >> 16;
+	/* some single frames carry 8 bytes before their 802.3 header */
+	fe.sdl[id] = len;
+	fe.hdr[id] = last && tag % 4 == 1 ? 4 : 0;
 	buf = (u8 *)d[0];
 	CHECK(d[0] == POOL_BASE + id * 2048 + 192, "rx slot addr %x id %u",
 	      d[0], id);
 	for (i = 0; i < len; i++)
 		buf[i] = (u8)(tag + i);
 	d[1] |= BIT(31);
-	c[1] = len << 16 | (last ? BIT(30) : 0) | 1 << 11;
+	c[1] = len << 16 | (last ? BIT(30) : 0) | 1 << 11 | fe.hdr[id];
 	c[2] = id << 16 | ind << 12;
 	wmb();
 	c[3] = chip.rxd_gen << 28;
@@ -530,7 +594,10 @@ static u32 host_rx_poll(u32 *frames_seen)
 {
 	volatile struct libranpu_host_rx *ring = (void *)HRX_BASE;
 	volatile u32 *ret = (u32 *)HRET_BASE;
-	u32 n = 0, prod = REG32(HA_RX(0) + 8);
+	u32 n = 0, prod;
+
+	fe_step();
+	prod = REG32(HA_RX(0) + 8);
 
 	while (hrx_cons != prod) {
 		volatile struct libranpu_host_rx *e = &ring[hrx_cons];
@@ -553,6 +620,14 @@ static u32 host_rx_poll(u32 *frames_seen)
 			if ((segs != 1 && segs != 3) ||
 			    FIELD_GET(LIBRANPU_HRX_REASON, e->info) ==
 			    LIBRANPU_HRX_ERROR)
+				host_bad++;
+			/* back from the PPE: its entry and reason */
+			if (FIELD_GET(LIBRANPU_HRX_REASON, e->info) ==
+			    LIBRANPU_HRX_PPE &&
+			    (FIELD_GET(LIBRANPU_HRX_FOE, e->info) !=
+			     ((id * 7) & 0x7FFF) ||
+			     FIELD_GET(LIBRANPU_HRX_CRSN, e->info) != 0x0F ||
+			     FIELD_GET(LIBRANPU_HRX_OFFSET, e->buf) != 192))
 				host_bad++;
 		}
 		e->ctrl = 0;
@@ -589,14 +664,14 @@ static s32 wlan_ctl(u16 op, struct libranpu_wlan_audit *a)
 	return cmd(LIBRANPU_SVC_WLAN, op, &w, sizeof(w), a, NULL);
 }
 
-static void wlan_session(u32 frames)
+static void wlan_session(u32 frames, bool force)
 {
 	struct libranpu_wlan_attach a;
 	struct libranpu_wlan_attach_rsp rsp;
 	struct libranpu_wlan_audit au;
 	struct libranpu_wlan_stats ws;
 	struct libranpu_wlan_ctl w = { 0 };
-	u32 i, t0, seen = 0, want = 0, band = 0;
+	u32 i, t0, seen = 0, want = 0, band = 0, bound0 = fe.bound, bound;
 	s32 st;
 
 	memset(&a, 0, sizeof(a));
@@ -616,6 +691,7 @@ static void wlan_session(u32 frames)
 	a.pool_base = POOL_BASE;
 	a.pool_ids = POOL_IDS;
 	a.rx_mod_frames = 16;
+	a.flags = force ? LIBRANPU_WLAN_F_FORCE_HOST : 0;
 	ring_desc(&a.ring[0], LIBRANPU_RING_RX_DATA, 0, 0, RX_ENTRIES, 16,
 		  regs_of(0), 0);
 	ring_desc(&a.ring[1], LIBRANPU_RING_RX_DATA, 1, 1, RX_ENTRIES, 16,
@@ -671,18 +747,24 @@ static void wlan_session(u32 frames)
 			return;
 		}
 	}
-	for (t0 = cycles(); seen < want && cycles() - t0 < TIMEOUT;)
+	for (t0 = cycles(); seen + fe.bound - bound0 < want &&
+	     cycles() - t0 < TIMEOUT;)
 		host_rx_poll(&seen);
-	CHECK(seen == want && !host_bad, "frames %u of %u, bad %u", seen, want,
-	      host_bad);
-	CHECK(host_got == chip.sent - chip.stale, "segments %u of %u - %u",
-	      host_got, chip.sent, chip.stale);
+	bound = fe.bound - bound0;
+	CHECK(seen + bound == want && !host_bad && !fe.bad,
+	      "frames %u + bound %u of %u, bad %u, fe bad %u", seen, bound, want,
+	      host_bad, fe.bad);
+	CHECK(force ? !bound : bound > 0, "force %d bound %u", force, bound);
+	CHECK(host_got == chip.sent - chip.stale - bound,
+	      "segments %u of %u - %u - %u", host_got, chip.sent, chip.stale,
+	      bound);
 	CHECK(cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w, sizeof(w),
 		  &ws, NULL) == 0 && ws.rx_frames == chip.sent &&
 	      ws.rx_stale == chip.stale && ws.rx_ind[6] == chip.gap &&
-	      ws.host_segs == host_got && !ws.rx_pn_fail,
-	      "stats frames %u stale %u gap %u segs %u", ws.rx_frames,
-	      ws.rx_stale, ws.rx_ind[6], ws.host_segs);
+	      ws.host_segs == host_got && !ws.rx_pn_fail &&
+	      ws.ppe_bound == bound && !ws.ppe_bad_id,
+	      "stats frames %u stale %u gap %u segs %u bound %u", ws.rx_frames,
+	      ws.rx_stale, ws.rx_ind[6], ws.host_segs, ws.ppe_bound);
 
 	/* let the buffer task take the last returns, then stop */
 	for (t0 = cycles(); cycles() - t0 < 20000000;)
@@ -690,10 +772,11 @@ static void wlan_session(u32 frames)
 	st = wlan_ctl(LIBRANPU_WLAN_STOP, &au);
 	CHECK(st == 0, "stop %d", (int)st);
 	CHECK(au.free + au.chip == POOL_IDS && !au.host && !au.lost &&
-	      !au.transit, "audit free %u chip %u host %u transit %u lost %u",
-	      au.free, au.chip, au.host, au.transit, au.lost);
-	out("wlan: %u frames (%u segments), audit free %u chip %u\n", seen,
-	    host_got, au.free, au.chip);
+	      !au.transit && !au.fe,
+	      "audit free %u chip %u host %u transit %u fe %u lost %u",
+	      au.free, au.chip, au.host, au.transit, au.fe, au.lost);
+	out("wlan: %u frames to host, %u bound (%u segments), audit free %u chip %u\n",
+	    seen, bound, host_got, au.free, au.chip);
 	CHECK(wlan_ctl(LIBRANPU_WLAN_DETACH, &au) == 0, "detach");
 }
 
@@ -710,9 +793,11 @@ static void test_wlan(void)
 		  NULL, NULL) == -EINVAL, "attach without rings");
 	CHECK(wlan_ctl(LIBRANPU_WLAN_START, NULL) == -EBUSY, "start detached");
 
-	wlan_session(3000);
-	/* a second attach starts from scratch */
-	wlan_session(1000);
+	FE(0xFE0) = 0;
+	FE(0x80C) = 0;
+	wlan_session(3000, false);
+	/* a second attach starts from scratch; all to the host */
+	wlan_session(1000, true);
 }
 
 void host_main(void)

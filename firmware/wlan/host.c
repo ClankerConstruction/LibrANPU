@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 /*
- * Host task: frames from the rx task to the host rx ring, by buffer id.
+ * Host task: frames from the rx task and the ones the PPE handed back
+ * to the host rx ring, by buffer id.
  * The host sees a new index as an interrupt; it is published after
  * mod_frames entries, when no frame is waiting, or after mod_cycles.
  */
@@ -14,6 +15,7 @@
 struct host_state {
 	u32 epoch;
 	struct spsc_cons in;
+	struct spsc_cons ppe;
 	struct spsc_prod drop;
 	u32 widx;
 	u32 hidx;			/* host index last read */
@@ -30,6 +32,7 @@ static void host_reset(struct wlan_radio *r)
 {
 	hs.epoch = r->epoch;
 	spsc_cons_init(&hs.in, r->rx2host);
+	spsc_cons_init(&hs.ppe, r->ppe2host);
 	spsc_prod_init(&hs.drop, r->host2buf);
 	hs.widx = 0;
 	hs.hidx = 0;
@@ -66,8 +69,8 @@ static bool host_deliver(struct wlan_radio *r)
 			h->entry_size * ((hs.widx + i) % h->entries));
 
 		e->info = FIELD_PREP(LIBRANPU_HRX_SEGS, n) |
-			  FIELD_PREP(LIBRANPU_HRX_REASON, m->reason);
-		e->data = FIELD_PREP(LIBRANPU_HRX_BAND, m->band);
+			  (m->info & ~WRX_LAST);
+		e->data = 0;
 		e->buf = FIELD_PREP(LIBRANPU_HRX_ID, m->id) |
 			 FIELD_PREP(LIBRANPU_HRX_OFFSET, LIBRANPU_RX_HEADROOM);
 	}
@@ -116,6 +119,38 @@ static void host_publish(struct wlan_radio *r, bool idle)
 	hs.pending = 0;
 }
 
+/* one input: rx task segments, or single frames back from the PPE */
+static int host_take(struct wlan_radio *r, struct spsc_cons *in, u32 st,
+		     int max)
+{
+	int n = 0;
+
+	while (n < max && spsc_avail(in, 1)) {
+		struct wlan_rx_msg *m = spsc_peek(in, 0);
+
+		if (st == WLAN_STOPPING) {
+			if (!host_drop(r, m->id))
+				break;
+		} else if (hs.nseg == WLAN_MAX_SEGS) {
+			/* no last segment in reach: drop what is held */
+			while (hs.nseg && host_drop(r, hs.seg[hs.nseg - 1].id))
+				hs.nseg--;
+			if (hs.nseg)
+				break;
+			continue;
+		} else {
+			hs.seg[hs.nseg++] = *m;
+		}
+		spsc_release(in, 1);
+		n++;
+		if (hs.nseg && (hs.seg[hs.nseg - 1].info & WRX_LAST) &&
+		    !host_deliver(r))
+			break;
+	}
+
+	return n;
+}
+
 int wlan_host_task(struct task *t, int budget)
 {
 	struct wlan_radio *r = t->ctx;
@@ -132,42 +167,27 @@ int wlan_host_task(struct task *t, int budget)
 	}
 
 	/* a frame the full ring refused goes first */
-	if (hs.nseg && (hs.seg[hs.nseg - 1].flags & WRX_LAST) &&
+	if (hs.nseg && (hs.seg[hs.nseg - 1].info & WRX_LAST) &&
 	    st == WLAN_RUNNING && !host_deliver(r))
 		goto out;
 
-	while (n < budget * 32 && spsc_avail(&hs.in, 1)) {
-		struct wlan_rx_msg *m = spsc_peek(&hs.in, 0);
-
-		if (st == WLAN_STOPPING) {
-			if (!host_drop(r, m->id))
-				break;
-		} else if (hs.nseg == WLAN_MAX_SEGS) {
-			/* no last segment in reach: drop what is held */
-			while (hs.nseg && host_drop(r, hs.seg[hs.nseg - 1].id))
-				hs.nseg--;
-			if (hs.nseg)
-				break;
-			continue;
-		} else {
-			hs.seg[hs.nseg++] = *m;
-		}
-		spsc_release(&hs.in, 1);
-		n++;
-		if (hs.nseg && (hs.seg[hs.nseg - 1].flags & WRX_LAST) &&
-		    !host_deliver(r))
-			break;
-	}
+	n = host_take(r, &hs.in, st, budget * 32);
+	/* single segments: only between chains */
+	if (!hs.nseg)
+		n += host_take(r, &hs.ppe, st, budget * 32);
 
 	if (st == WLAN_STOPPING) {
 		while (hs.nseg && host_drop(r, hs.seg[hs.nseg - 1].id))
 			hs.nseg--;
 		host_publish(r, true);
-		if (!hs.nseg && !spsc_avail(&hs.in, 1))
+		if (!hs.nseg && !spsc_avail(&hs.in, 1) &&
+		    !spsc_avail(&hs.ppe, 1))
 			WRITE_ONCE(r->ack[WT_HOST], st);
 		return n;
 	}
 out:
-	host_publish(r, !spsc_avail(&hs.in, 1));
+	host_publish(r, !spsc_avail(&hs.in, 1) && !spsc_avail(&hs.ppe, 1));
 	return n;
 }
+
+
