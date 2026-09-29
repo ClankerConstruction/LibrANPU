@@ -43,7 +43,10 @@ The host reads no NPU register between the trigger and `ready`: the bus reset wo
 | hart | tasks |
 |---|---|
 | 0 | `ctl` (commands, event flush), `health` (faults, stalls), `dbg` |
-| 1..N | `dbg` (probe target) |
+| 1 | `rx`: RXDMAD_C walk, to the PPE or the host task (WLAN) |
+| 3 | `host`: host rx ring, interrupt moderation (WLAN) |
+| 4 | `buf`: id pool, rx ring refill, host return ring, PPE return FIFO (WLAN) |
+| 1..5 | `dbg` (probe target) |
 
 ## Hand-offs and memory
 
@@ -52,6 +55,33 @@ The host reads no NPU register between the trigger and `ready`: the bus reset wo
 - Arena: first-fit block table (64 blocks), zeroed blocks, freed per owner (radio, service). Only
   hart 0 allocates. Two arenas: NPU SRAM and cluster SRAM above `.bss`.
 - D-caches are per hart and not coherent: state two harts touch stays in SRAM.
+
+## WLAN datapath (`rro31`, MT7990/MT7992)
+
+```mermaid
+flowchart LR
+  CHIP["WiFi chip"] -->|"RXDMAD_C"| RX["rx task"]
+  RX -->|"TDMA tx ring 0:<br/>addr, id, len"| PPE["frame engine / PPE"]
+  RX -->|"SPSC: chains, flagged, forced"| HOST["host task"]
+  PPE -->|"bound"| LAN["Ethernet"]
+  PPE -->|"WiFi buffer FIFO"| BUF["buffer task"]
+  BUF -->|"SPSC: unbound + FOE, CRSN"| HOST
+  BUF -->|"refill"| CHIP
+  HOST -->|"host rx ring (by id)"| WD["WiFi driver"]
+  WD -->|"return ring (ids)"| BUF
+```
+
+- Attach places the chip rings per PCIe link in NPU SRAM and opens that link's inbound window;
+  buffers are `pool + id * 2048`, frame data at `+192`, one fixed pool the host maps.
+- rx: a whole 802.3 frame without a chip flag goes to the PPE (two SRAM stores, the cpu index
+  once per burst); repeated and old frames are dropped, PN failures reach the host as errors,
+  every other indication reason is a good frame. A full TDMA ring stops the walk (no drop).
+- buffer: bound FIFO entries free the id; unbound ones go to the host with the FOE entry and CPU
+  reason (the WiFi driver binds on reason 0x0F). The CRSN mask holds only 0x1F, "hit a bound entry".
+- stop: every task drains, the frame engine returns every id; the audit accounts each id (pool,
+  chip, host, transit, frame engine).
+- Counters (`GET_STATS`): completions per indication reason, stale drops, host ring, refills per
+  band, PPE sent/bound/unbound/full, unbound returns per CPU reason.
 
 ## Host channel
 

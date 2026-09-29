@@ -3,7 +3,7 @@
 | level | run | covers |
 |---|---|---|
 | unit | `make -C tests/unit` (gcc -m32, UBSan) | arena, SPSC (incl. 2M entries across two threads), formatter |
-| QEMU | `tests/qemu/run.sh` | the QEMU image on 6 harts + a host model hart: load, boot, commands, burst of 96, errors, peek/poke, faults, probes, reset |
+| QEMU | `tests/qemu/run.sh` | the QEMU image on 6 harts + a host model hart: load, boot, commands, burst of 96, errors, peek/poke, faults, probes, reset; WLAN with a chip model and a frame engine model (descriptors, pad, bind 1 in 3, FIFO), both bands, chains, indication reasons, stats, stop audit, re-attach, force host |
 | DUT | by hand on the DUT | boot, reload loops, probes, command latency |
 
 ## QEMU harness
@@ -31,3 +31,13 @@ flowchart LR
 | `wfi` | stops the hart and `mcycle`; its mailbox queue wakes it |
 | D-cache | per hart, write-back, not coherent between harts |
 | cluster SRAM | 32 KB, mirrored every 32 KB |
+
+WLAN (MT7990, two PCIe links, commit `0f055f3`):
+
+| item | result |
+|---|---|
+| rx to the host, per client | 5 GHz 751-898 / 418-566, 2.4 GHz 94-153 Mb/s: host-path parity |
+| MTU 2304 | 1472-2276 B frames (two-segment chains) both ways, 0 % loss |
+| WiFi to WAN through the PPE | 560-662 Mb/s at 11-14 % DUT CPU; host path 586-624 Mb/s at 49-52 % |
+| bound flow | 99.3 % of its frames forwarded by the PPE |
+| NPU cost | rx task ~450 cycles per frame at ~48 k frames/s (3 % of its hart) |

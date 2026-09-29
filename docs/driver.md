@@ -36,8 +36,16 @@ flowchart TD
 
 ## Consumer API (`include/linux/soc/airoha/libranpu.h`)
 
-`libranpu_get/put` (from the `airoha,npu` phandle), `libranpu_caps`, `libranpu_cmd`,
-notifier (`LIBRANPU_FATAL`).
+`libranpu_get/put` (from the `airoha,npu` phandle; refuses a node another driver owns),
+`libranpu_caps`, `libranpu_cmd`, notifier (`LIBRANPU_FATAL`).
+
+WLAN (`driver/wlan.c`): `libranpu_rx_pool` / `libranpu_rx_sync` (the `rx-pkt` pool, mapped once,
+synced per frame), `libranpu_wlan_attach/start/stop/detach/force_host/stats`, host adaptor rings
+(`ha_ring_init`, `ha_rx_prod/cons`, `ha_tx_prod/cons`) and lines (`ha_irq`, `ha_irq_enable`,
+`ha_irq_ack`: each line acks only its own ring).
+
+debugfs: `status`, `dbg_block`, `probe`, `cmd_bench`, `ha_probe`, `wlan_stats`, `wlan_force_host`
+(bench switch; devlink later).
 
 ## DT
 
@@ -46,8 +54,8 @@ npu@1e900000 {
 	compatible = "airoha,an7583-libranpu";
 	reg = <0x0 0x1e900000 0x0 0x313000>;
 	interrupts = <GIC_SPI 125 IRQ_TYPE_LEVEL_HIGH>;	/* mailbox first */
-	memory-region = <&npu_binary>;
-	memory-region-names = "binary";
+	memory-region = <&npu_binary>, <&npu_pkt>;
+	memory-region-names = "binary", "rx-pkt";	/* rx-pkt without no-map */
 };
 ```
 
