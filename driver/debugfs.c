@@ -385,6 +385,8 @@ void libranpu_debugfs_init(struct libranpu *npu)
 			    &wlan_stats_fops);
 	debugfs_create_file_unsafe("wlan_force_host", 0200, npu->debugfs, npu,
 				   &wlan_force_host_fops);
+	/* bench switch: 0 copies every rx frame */
+	debugfs_create_bool("wlan_rx_lend", 0600, npu->debugfs, &npu->rxb.lend);
 	debugfs_create_file("cmd_bench", 0400, npu->debugfs, npu,
 			    &cmd_bench_fops);
 	if (le32_to_cpu(npu->caps.services) & LIBRANPU_SVC_F_DBG)

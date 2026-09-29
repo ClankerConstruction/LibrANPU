@@ -167,7 +167,7 @@ struct sk_buff *libranpu_rx_skb(struct libranpu *npu,
 		len += seg[i].len;
 	}
 
-	if (len > RX_COPYBREAK && b->lent + nseg <= b->lend_max) {
+	if (len > RX_COPYBREAK && b->lent + nseg <= b->lend_max && b->lend) {
 		skb = rxb_build(npu, seg, nseg);
 		if (skb) {
 			b->lent_frames++;
@@ -231,6 +231,7 @@ int libranpu_rxb_init(struct libranpu *npu)
 	u32 p;
 
 	b->ids = npu->pool.ids;
+	b->lend = true;
 	b->buf_len = SKB_WITH_OVERHEAD(LIBRANPU_RX_BUF_SIZE);
 	b->ready = kvcalloc(b->ids, sizeof(*b->ready), GFP_KERNEL);
 	b->held = dmam_alloc_coherent(npu->dev,

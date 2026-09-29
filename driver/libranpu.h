@@ -64,6 +64,7 @@ struct libranpu_rxb {
 	u32 ids, pages, per_page;	/* per_page 0: copy only */
 	u32 buf_len;			/* headroom + chip buffer length */
 	u32 lent, lend_max;
+	bool lend;			/* bench switch, debugfs */
 	__le32 *held;			/* attach: ids still lent */
 	dma_addr_t held_dma;
 	u64 lent_frames, copied_frames, reclaimed;
