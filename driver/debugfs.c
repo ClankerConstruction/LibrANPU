@@ -288,6 +288,7 @@ static void ha_probe_one(struct seq_file *s, struct ha_probe *hp, int r,
 /* radio 0 counters since its attach, one name and value per line */
 static int wlan_stats_show(struct seq_file *s, void *data)
 {
+	struct libranpu_rxb *b = &((struct libranpu *)s->private)->rxb;
 	struct libranpu_wlan_stats st;
 	const __le32 *v = (const __le32 *)&st;
 	static const char * const names[] = {
@@ -313,6 +314,11 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 		if (st.ppe_crsn[i])
 			seq_printf(s, "ppe_crsn%02x %u\n", i,
 				   le16_to_cpu(st.ppe_crsn[i]));
+	/* host side, read without the NAPI context */
+	seq_printf(s, "host_lent_frames %llu\nhost_copied_frames %llu\n",
+		   b->lent_frames, b->copied_frames);
+	seq_printf(s, "host_reclaimed %llu\nhost_lent_now %u of %u\n",
+		   b->reclaimed, b->lent, b->lend_max);
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(wlan_stats);

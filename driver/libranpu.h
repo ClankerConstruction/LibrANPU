@@ -48,6 +48,27 @@ struct libranpu_slot {
 	bool abandoned;
 };
 
+/* rx buffers the stack holds, per pool page */
+struct libranpu_rx_page {
+	u16 bias;			/* page references the driver owns */
+	u8 lent;			/* bitmap of its buffers */
+};
+
+/* rxbuf.c: one NAPI context uses it, attach runs with that one off */
+struct libranpu_rxb {
+	struct libranpu_rx_page *pg;
+	u16 *fifo;			/* pages with lent buffers */
+	u16 *ready;			/* ids to give back to the NPU */
+	u32 fifo_head, fifo_len;
+	u32 ready_head, ready_len;
+	u32 ids, pages, per_page;	/* per_page 0: copy only */
+	u32 buf_len;			/* headroom + chip buffer length */
+	u32 lent, lend_max;
+	__le32 *held;			/* attach: ids still lent */
+	dma_addr_t held_dma;
+	u64 lent_frames, copied_frames, reclaimed;
+};
+
 struct libranpu {
 	struct device *dev;
 	void __iomem *base;
@@ -76,6 +97,7 @@ struct libranpu {
 
 	int irq;
 	struct libranpu_rx_pool pool;
+	struct libranpu_rxb rxb;
 	/* protects the host adaptor line masks */
 	spinlock_t ha_lock;
 	struct blocking_notifier_head notifier;
@@ -102,6 +124,11 @@ irqreturn_t libranpu_mbox_thread(int irq, void *data);
 /* wlan.c */
 int libranpu_wlan_init(struct libranpu *npu);
 void libranpu_wlan_deinit(struct libranpu *npu);
+
+/* rxbuf.c */
+int libranpu_rxb_init(struct libranpu *npu);
+void libranpu_rxb_deinit(struct libranpu *npu);
+dma_addr_t libranpu_rxb_attach(struct libranpu *npu, u32 rx_ring_ids);
 
 /* devlink.c */
 struct libranpu *libranpu_devlink_alloc(struct device *dev);

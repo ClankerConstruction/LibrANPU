@@ -58,13 +58,14 @@ int libranpu_wlan_init(struct libranpu *npu)
 		return -ENOMEM;
 	}
 	p->ids = ids;
-	return 0;
+	return libranpu_rxb_init(npu);
 }
 
 void libranpu_wlan_deinit(struct libranpu *npu)
 {
 	struct libranpu_rx_pool *p = &npu->pool;
 
+	libranpu_rxb_deinit(npu);
 	if (p->cpu)
 		dma_unmap_single(npu->dev, p->dma,
 				 p->ids * LIBRANPU_RX_BUF_SIZE,
@@ -77,14 +78,6 @@ const struct libranpu_rx_pool *libranpu_rx_pool(struct libranpu *npu)
 	return npu->pool.cpu ? &npu->pool : NULL;
 }
 EXPORT_SYMBOL_GPL(libranpu_rx_pool);
-
-void libranpu_rx_sync(struct libranpu *npu, u32 id, u32 off, u32 len)
-{
-	dma_sync_single_range_for_cpu(npu->dev, npu->pool.dma,
-				      id * LIBRANPU_RX_BUF_SIZE + off, len,
-				      DMA_FROM_DEVICE);
-}
-EXPORT_SYMBOL_GPL(libranpu_rx_sync);
 
 static int wlan_ctl(struct libranpu *npu, u16 op, u8 radio, u8 dir,
 		    struct libranpu_wlan_audit *audit)
@@ -102,13 +95,26 @@ static int wlan_ctl(struct libranpu *npu, u16 op, u8 radio, u8 dir,
 }
 
 int libranpu_wlan_attach(struct libranpu *npu,
-			 const struct libranpu_wlan_attach *req,
+			 struct libranpu_wlan_attach *req,
 			 struct libranpu_wlan_attach_rsp *rsp)
 {
+	u32 i, ring_ids = 0;
 	u16 len = sizeof(*rsp);
 
 	if (!(le32_to_cpu(npu->caps.services) & LIBRANPU_SVC_F_WLAN))
 		return -EOPNOTSUPP;
+	if (!npu->pool.cpu || req->nrings > LIBRANPU_WLAN_RINGS)
+		return -EINVAL;
+
+	for (i = 0; i < req->nrings; i++)
+		if (req->ring[i].kind == LIBRANPU_RING_RX_DATA)
+			ring_ids += le16_to_cpu(req->ring[i].entries);
+	req->pool_base = cpu_to_le32(npu->pool.dma);
+	req->pool_ids = cpu_to_le32(npu->pool.ids);
+	/* the stack's skb_shared_info goes after the chip's bytes */
+	req->rx_headroom = 0;
+	req->rx_buf_len = cpu_to_le16(npu->rxb.buf_len);
+	req->rx_held = cpu_to_le32(libranpu_rxb_attach(npu, ring_ids));
 	return libranpu_cmd(npu, LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_ATTACH,
 			    req, sizeof(*req), rsp, &len);
 }

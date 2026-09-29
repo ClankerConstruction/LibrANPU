@@ -2,7 +2,7 @@
 # make KERNEL_DIR=... ARCH=arm64 CROSS_COMPILE=...
 
 obj-m += libranpu.o
-libranpu-y := core.o cmd.o devlink.o debugfs.o wlan.o
+libranpu-y := core.o cmd.o devlink.o debugfs.o wlan.o rxbuf.o
 ccflags-y += -I$(src)/../include
 
 ifneq ($(KERNELRELEASE),)

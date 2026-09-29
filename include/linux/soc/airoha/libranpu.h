@@ -11,6 +11,8 @@
 
 struct libranpu;
 struct device;
+struct napi_struct;
+struct sk_buff;
 
 /* from the "airoha,npu" phandle of @dev */
 struct libranpu *libranpu_get(struct device *dev);
@@ -36,11 +38,29 @@ struct libranpu_rx_pool {
 };
 
 const struct libranpu_rx_pool *libranpu_rx_pool(struct libranpu *npu);
-/* the CPU is about to read len bytes at off in buffer id */
-void libranpu_rx_sync(struct libranpu *npu, u32 id, u32 off, u32 len);
 
+/* one buffer of a frame, from a host rx ring entry */
+struct libranpu_rx_seg {
+	u32 id;
+	u32 off;
+	u32 len;
+};
+
+/*
+ * The frame as an skb, on its buffers or copied; NULL when bad. Every
+ * id comes back through libranpu_rx_reclaim(). One NAPI context only.
+ */
+struct sk_buff *libranpu_rx_skb(struct libranpu *npu,
+				struct napi_struct *napi,
+				const struct libranpu_rx_seg *seg, u32 nseg);
+void libranpu_rx_drop(struct libranpu *npu,
+		      const struct libranpu_rx_seg *seg, u32 nseg);
+/* up to max ids the NPU may reuse, for the return ring */
+u32 libranpu_rx_reclaim(struct libranpu *npu, u32 *ids, u32 max);
+
+/* fills in the rx pool fields of req */
 int libranpu_wlan_attach(struct libranpu *npu,
-			 const struct libranpu_wlan_attach *req,
+			 struct libranpu_wlan_attach *req,
 			 struct libranpu_wlan_attach_rsp *rsp);
 int libranpu_wlan_start(struct libranpu *npu, u8 radio, u8 dir);
 int libranpu_wlan_stop(struct libranpu *npu, u8 radio,
