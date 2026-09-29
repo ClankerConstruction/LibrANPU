@@ -303,12 +303,14 @@ enum libranpu_ring_kind {
  * base is 0 (the NPU places them in its SRAM). Host rings: regs is the
  * host adaptor ring number, base the host memory. A host tx ring holds
  * chip tx descriptors (16 bytes) the NPU copies into its band's ring.
+ * A tx free ring stays in host memory, armed by the host: regs and base
+ * are both given, and the NPU re-arms slots with buf64 * 64 bytes.
  */
 struct libranpu_wlan_ring {
 	__u8 kind;			/* enum libranpu_ring_kind */
 	__u8 band;
 	__u8 link;			/* PCIe link of a chip ring */
-	__u8 rsv;
+	__u8 buf64;			/* tx free: buffer length / 64 */
 	__le16 entries;
 	__le16 entry_size;
 	__le32 regs;

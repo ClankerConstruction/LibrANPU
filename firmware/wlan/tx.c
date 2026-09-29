@@ -39,7 +39,6 @@ struct tx_state {
 	u32 fidx[WLAN_BANDS];		/* next tx free slot */
 	u32 hf_widx;			/* host tx free ring */
 	u32 hf_cons;			/* its host index, last read */
-	const u8 *pool;			/* rx buffers, cached */
 };
 
 static struct tx_state ts;
@@ -50,14 +49,10 @@ static void tx_reset(struct wlan_radio *r)
 
 	ts.epoch = r->epoch;
 	ts.started = false;
-	for (b = 0; b < WLAN_BANDS; b++) {
+	for (b = 0; b < WLAN_BANDS; b++)
 		ts.cons[b] = 0;
-		ts.fidx[b] = 0;
-	}
 	ts.hf_widx = 0;
 	ts.hf_cons = 0;
-	ts.pool = plat_cached(plat_host_ptr(r->pool_base, r->pool_ids *
-					    LIBRANPU_RX_BUF_SIZE));
 	if (r->htxf.base)
 		REG32(r->htxf.regs + TXF_PROD) = 0;
 }
@@ -69,6 +64,7 @@ static void tx_begin(struct wlan_radio *r)
 	for (b = 0; b < WLAN_BANDS; b++) {
 		ts.head[b] = r->tx_start[b];
 		ts.tail[b] = r->tx_start[b];
+		ts.fidx[b] = r->txfree_start[b];
 	}
 	ts.started = true;
 }
@@ -214,7 +210,10 @@ static bool txf_report(struct wlan_radio *r, const volatile u32 *ev, u32 len)
 	return true;
 }
 
-/* the chip's tx free reports of one ring; slots keep their buffers */
+/*
+ * The chip's tx free reports of one ring, in host memory: each slot
+ * keeps the buffer the host gave it.
+ */
 static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 {
 	struct wlan_ring *w = &r->txfree[b];
@@ -222,17 +221,17 @@ static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 
 	while (n < budget) {
 		volatile u32 *d = (u32 *)(w->desc + 16 * idx);
-		u32 ctrl = d[1], len = FIELD_GET(WLAN_RX_DESC_LEN, ctrl);
-		u32 off = d[0] - r->pool_base, o;
+		u32 ctrl = d[1], len = FIELD_GET(WLAN_RX_DESC_LEN, ctrl), o;
+		const u8 *ev;
 
 		if (!(ctrl & WLAN_TX_DESC_DONE))
 			break;
-		if (!(ctrl & WLAN_RX_DESC_LAST) || len > LIBRANPU_RX_BUF_SIZE ||
-		    off >= r->pool_ids * LIBRANPU_RX_BUF_SIZE) {
+		ev = plat_host_ptr(d[0], len);
+		if (!(ctrl & WLAN_RX_DESC_LAST) || !ev ||
+		    len > FIELD_GET(WLAN_RX_DESC_LEN, r->txfree_arm[b])) {
 			r->txstats.txfree_bad++;
 		} else {
-			const u8 *ev = ts.pool + off;
-
+			ev = plat_cached((void *)ev);
 			for (o = 0; o < len; o += LINE)
 				plat_dcache_inv(ev + o);
 			if (!txf_report(r, (const volatile u32 *)ev, len)) {
@@ -241,7 +240,7 @@ static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 			}
 			r->txstats.txfree_events[b]++;
 		}
-		d[1] = FIELD_PREP(WLAN_RX_DESC_LEN, LIBRANPU_RX_BUF_SIZE);
+		d[1] = r->txfree_arm[b];
 		idx = idx + 1 == w->entries ? 0 : idx + 1;
 		n++;
 	}

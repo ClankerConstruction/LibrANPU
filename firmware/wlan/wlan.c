@@ -39,7 +39,6 @@ static int check_ring(const struct libranpu_wlan_attach *a,
 	case LIBRANPU_RING_RX_DATA:
 	case LIBRANPU_RING_RXDMAD_C:
 	case LIBRANPU_RING_TX_DATA:
-	case LIBRANPU_RING_TXFREE:
 		if (d->entry_size != 16 || d->entries < 64 ||
 		    d->entries > WLAN_RING_MAX || d->link > 1 || !d->regs ||
 		    d->band >= a->bands)
@@ -54,6 +53,12 @@ static int check_ring(const struct libranpu_wlan_attach *a,
 	case LIBRANPU_RING_HOST_RET:
 		if (d->entry_size != 4 || d->regs >= HOST_RINGS ||
 		    d->entries < 64 || d->entries > 2 * a->pool_ids)
+			return -EINVAL;
+		return 0;
+	case LIBRANPU_RING_TXFREE:
+		if (d->entry_size != 16 || d->entries < 64 || !d->regs ||
+		    d->entries > WLAN_RING_MAX || d->band >= WLAN_BANDS ||
+		    d->buf64 < 1 || !plat_host_ptr(d->base, d->entries * 16u))
 			return -EINVAL;
 		return 0;
 	case LIBRANPU_RING_HOST_TXFREE:
@@ -84,6 +89,23 @@ static void host_ring(struct wlan_host_ring *h,
 	h->entry_size = d->entry_size;
 }
 
+/*
+ * The chip reports tx free into host memory only: the ring stays where
+ * the host put it, the NPU just takes and re-arms its slots.
+ */
+static void txfree_ring(struct wlan_radio *r,
+			const struct libranpu_wlan_ring *d)
+{
+	struct wlan_ring *w = &r->txfree[d->band];
+
+	w->desc = (uintptr_t)plat_host_ptr(d->base, d->entries * 16u);
+	w->bus = d->base;
+	w->regs = d->regs;
+	w->entries = d->entries;
+	w->band = d->band;
+	r->txfree_arm[d->band] = FIELD_PREP(WLAN_RX_DESC_LEN, d->buf64 * 64u);
+}
+
 /* the rings of one link in one block, and the link's window over it */
 static int place_link(struct wlan_radio *r,
 		      const struct libranpu_wlan_attach *a, u32 link,
@@ -97,8 +119,7 @@ static int place_link(struct wlan_radio *r,
 
 		if ((d->kind == LIBRANPU_RING_RX_DATA ||
 		     d->kind == LIBRANPU_RING_RXDMAD_C ||
-		     d->kind == LIBRANPU_RING_TX_DATA ||
-		     d->kind == LIBRANPU_RING_TXFREE) && d->link == link)
+		     d->kind == LIBRANPU_RING_TX_DATA) && d->link == link)
 			total += chip_bytes(d);
 	}
 	if (!total)
@@ -120,8 +141,6 @@ static int place_link(struct wlan_radio *r,
 			w = &r->rxdmad;
 		else if (d->kind == LIBRANPU_RING_TX_DATA)
 			w = &r->tx[d->band];
-		else if (d->kind == LIBRANPU_RING_TXFREE)
-			w = &r->txfree[d->band];
 		else
 			continue;
 
@@ -161,21 +180,6 @@ static void fill_rings(struct wlan_radio *r)
 	for (b = 0; b < r->nbands; b++)
 		for (i = 0; i < r->tx[b].entries; i++)
 			REG32(r->tx[b].desc + 16 * i + 4) = WLAN_TX_DESC_DONE;
-	/* tx free: each slot keeps its buffer for good */
-	for (b = 0; b < WLAN_BANDS; b++) {
-		struct wlan_ring *w = &r->txfree[b];
-
-		for (i = 0; i < w->entries; i++) {
-			volatile u32 *d = (u32 *)(w->desc + 16 * i);
-
-			pool_get(&r->pool, &id, 1);
-			d[0] = wlan_pool_bus(r, id);
-			d[2] = 0;
-			d[3] = 0;
-			d[1] = FIELD_PREP(WLAN_RX_DESC_LEN, LIBRANPU_RX_BUF_SIZE);
-		}
-		r->txfree_ids += w->entries;
-	}
 }
 
 static int wlan_attach(struct cmd_ctx *c)
@@ -215,8 +219,7 @@ static int wlan_attach(struct cmd_ctx *c)
 		err = check_ring(a, d);
 		if (err)
 			return err;
-		if (d->kind == LIBRANPU_RING_RX_DATA ||
-		    d->kind == LIBRANPU_RING_TXFREE)
+		if (d->kind == LIBRANPU_RING_RX_DATA)
 			need += d->entries;
 		if (d->kind == LIBRANPU_RING_HOST_RX)
 			host_ring(&r->hrx[d->band], d, HOST_RX_REGS(d->regs));
@@ -226,6 +229,8 @@ static int wlan_attach(struct cmd_ctx *c)
 			host_ring(&r->htx[d->band], d, HOST_TX_REGS(d->regs));
 		if (d->kind == LIBRANPU_RING_HOST_TXFREE)
 			host_ring(&r->htxf, d, HOST_RX_REGS(d->regs));
+		if (d->kind == LIBRANPU_RING_TXFREE)
+			txfree_ring(r, d);
 	}
 	if (need >= a->pool_ids || !r->hrx[0].base || !r->hret.base)
 		return -EINVAL;
@@ -315,9 +320,14 @@ static int wlan_start(struct cmd_ctx *c)
 			return -EIO;
 		REG32(r->tx[b].regs + 8) = r->tx_start[b];
 	}
-	for (b = 0; b < WLAN_BANDS && r->tx_on; b++)
-		if (r->txfree[b].desc)
-			REG32(r->txfree[b].regs + 8) = r->txfree[b].entries - 1;
+	/* tx free: the host armed the ring; take slots from the chip's */
+	for (b = 0; b < WLAN_BANDS && r->tx_on; b++) {
+		if (!r->txfree[b].desc)
+			continue;
+		r->txfree_start[b] = REG32(r->txfree[b].regs + 0xC);
+		if (r->txfree_start[b] >= r->txfree[b].entries)
+			return -EIO;
+	}
 	wmb();
 	WRITE_ONCE(r->state, WLAN_RUNNING);
 	return 0;

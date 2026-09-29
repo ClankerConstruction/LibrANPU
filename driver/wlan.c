@@ -107,8 +107,7 @@ int libranpu_wlan_attach(struct libranpu *npu,
 		return -EINVAL;
 
 	for (i = 0; i < req->nrings; i++)
-		if (req->ring[i].kind == LIBRANPU_RING_RX_DATA ||
-		    req->ring[i].kind == LIBRANPU_RING_TXFREE)
+		if (req->ring[i].kind == LIBRANPU_RING_RX_DATA)
 			ring_ids += le16_to_cpu(req->ring[i].entries);
 	req->pool_base = cpu_to_le32(npu->pool.dma);
 	req->pool_ids = cpu_to_le32(npu->pool.ids);

@@ -100,9 +100,10 @@ struct wlan_radio {
 	struct wlan_host_ring hret;
 	struct wlan_ring tx[WLAN_BANDS];	/* chip tx rings, tx task */
 	struct wlan_host_ring htx[WLAN_BANDS];	/* host descriptors */
-	struct wlan_ring txfree[WLAN_BANDS];	/* chip tx free rings, tx task */
+	struct wlan_ring txfree[WLAN_BANDS];	/* chip tx free, host memory */
+	u32 txfree_arm[WLAN_BANDS];	/* descriptor word 1 to re-arm */
+	u32 txfree_start[WLAN_BANDS];	/* chip dma index at start */
 	struct wlan_host_ring htxf;	/* tx free records to the host */
-	u32 txfree_ids;			/* pool ids under the tx free rings */
 	u32 tx_start[WLAN_BANDS];	/* chip dma index at start */
 	bool tx_on;
 	u32 mod_frames;
