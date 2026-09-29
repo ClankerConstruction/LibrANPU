@@ -297,6 +297,7 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 		"rx_ind14", "rx_ind15", "rx_stale", "rx_pn_fail", "rx_bad_id",
 		"host_segs", "host_full", "host_dropped", "buf_refill0",
 		"buf_refill1", "buf_returned", "buf_bad_ret", "buf_empty",
+		"ppe_tx", "ppe_full", "ppe_bound", "ppe_unbound", "ppe_bad_id",
 	};
 	int i, err;
 
@@ -310,6 +311,14 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(wlan_stats);
+
+/* bench switch: 1 sends every radio 0 frame to the host, not the PPE */
+static int wlan_force_host_set(void *data, u64 val)
+{
+	return libranpu_wlan_force_host(data, 0, !!val);
+}
+DEFINE_DEBUGFS_ATTRIBUTE(wlan_force_host_fops, NULL, wlan_force_host_set,
+			 "%llu\n");
 
 static int ha_probe_show(struct seq_file *s, void *data)
 {
@@ -363,6 +372,8 @@ void libranpu_debugfs_init(struct libranpu *npu)
 			    &dbg_block_fops);
 	debugfs_create_file("wlan_stats", 0400, npu->debugfs, npu,
 			    &wlan_stats_fops);
+	debugfs_create_file_unsafe("wlan_force_host", 0200, npu->debugfs, npu,
+				   &wlan_force_host_fops);
 	debugfs_create_file("cmd_bench", 0400, npu->debugfs, npu,
 			    &cmd_bench_fops);
 	if (le32_to_cpu(npu->caps.services) & LIBRANPU_SVC_F_DBG)
