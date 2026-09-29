@@ -7,6 +7,7 @@
 #include "ctl/ctl.h"
 #include "dbg/dbg.h"
 #include "plat/plat.h"
+#include "wlan/wlan.h"
 
 u32 harts_up(void)
 {
@@ -38,6 +39,11 @@ void caps_fill(struct libranpu_caps *caps)
 	caps->wlan_backends = fw_info.wlan_backends;
 	caps->wlan_features = fw_info.wlan_features;
 	caps->cpu_mhz = plat_cpu_mhz();
+#ifdef CONFIG_WLAN
+	caps->max_radios = 1;
+	caps->max_rx_ids = WLAN_POOL_MAX;
+	caps->max_rings_per_radio = LIBRANPU_WLAN_RINGS;
+#endif
 	for (h = 0; h < SOC_HARTS; h++)
 		caps->task_map[h] = task_map(h);
 }

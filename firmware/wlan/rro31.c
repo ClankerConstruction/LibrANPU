@@ -12,7 +12,9 @@
 #define RXD_ERR			BIT(13)
 #define RXD_DST			GENMASK(12, 11)
 #define RXD_ID			GENMASK(31, 16)
-#define RXD_ERR_TYPE		GENMASK(15, 12)
+#define RXD_IND		GENMASK(15, 12)	/* indication reason */
+#define RXD_IND_REPEAT		1
+#define RXD_IND_OLDPKT		2
 #define RXD_TO_HOST		BIT(7)
 #define RXD_GEN			GENMASK(31, 28)
 #define RX_BATCH		32
@@ -25,6 +27,7 @@ struct rx_state {
 	struct spsc_prod drop;
 	u32 bad_id;
 	u32 frames;
+	u32 stale;			/* repeated or old: dropped */
 };
 
 static struct rx_state rxs;
@@ -40,7 +43,7 @@ static void rx_reset(struct wlan_radio *r)
 
 static u8 rx_reason(const struct wlan_radio *r, u32 w1, u32 w2)
 {
-	if ((w1 & RXD_ERR) || FIELD_GET(RXD_ERR_TYPE, w2))
+	if ((w1 & RXD_ERR) || FIELD_GET(RXD_IND, w2))
 		return LIBRANPU_HRX_ERROR;
 	if (w2 & RXD_TO_HOST)
 		return LIBRANPU_HRX_CHIP;
@@ -53,12 +56,17 @@ static u8 rx_reason(const struct wlan_radio *r, u32 w1, u32 w2)
 /* one burst; false when the next hop is full and the slot must wait */
 static bool rx_one(struct wlan_radio *r, u32 w1, u32 w2, bool stopping)
 {
-	u32 id = FIELD_GET(RXD_ID, w2);
+	u32 id = FIELD_GET(RXD_ID, w2), ind = FIELD_GET(RXD_IND, w2);
 	struct wlan_rx_msg *m;
 
 	if (unlikely(id >= r->pool_ids)) {
 		rxs.bad_id++;
 		return true;
+	}
+	/* the chip's reorder saw these already: never to the stack */
+	if (ind == RXD_IND_REPEAT || ind == RXD_IND_OLDPKT) {
+		rxs.stale++;
+		stopping = true;
 	}
 	if (stopping) {
 		if (!spsc_room(&rxs.drop, 1))

@@ -473,6 +473,7 @@ struct chip {
 	u32 rxd_idx;
 	u32 rxd_gen;
 	u32 sent;
+	u32 stale;
 };
 
 static struct chip chip;
@@ -492,7 +493,7 @@ static u32 chip_rxd_used(void)
 }
 
 /* one segment: take the band's next slot, fill it, post a completion */
-static int chip_rx(u32 band, u32 len, bool last, u32 tag)
+static int chip_rx(u32 band, u32 len, bool last, u32 tag, u32 ind)
 {
 	volatile u32 *d = (u32 *)(chip.rx_desc[band] + 16 * chip.rx_idx[band]);
 	volatile u32 *c = (u32 *)(chip.rxd_desc + 16 * chip.rxd_idx);
@@ -509,7 +510,7 @@ static int chip_rx(u32 band, u32 len, bool last, u32 tag)
 		buf[i] = (u8)(tag + i);
 	d[1] |= BIT(31);
 	c[1] = len << 16 | (last ? BIT(30) : 0) | 1 << 11;
-	c[2] = id << 16;
+	c[2] = id << 16 | ind << 12;
 	wmb();
 	c[3] = chip.rxd_gen << 28;
 	chip.rx_idx[band] = (chip.rx_idx[band] + 1) % RX_ENTRIES;
@@ -518,6 +519,7 @@ static int chip_rx(u32 band, u32 len, bool last, u32 tag)
 		chip.rxd_gen = (chip.rxd_gen + 1) & 0xf;
 	}
 	chip.sent++;
+	chip.stale += !!ind;
 	return 0;
 }
 
@@ -644,14 +646,14 @@ static void wlan_session(u32 frames)
 	/* single frames on both bands, then 3-segment chains */
 	for (i = 0, t0 = cycles(); i < frames; ) {
 		bool chain = i >= frames / 2;
-		u32 segs = chain ? 3 : 1, s;
+		u32 segs = chain ? 3 : 1, s, ind = !chain && i % 10 == 5;
 
 		if (chip_rxd_used() + segs < RXD_ENTRIES - 8) {
 			for (s = 0; s < segs; s++)
 				while (chip_rx(band, 60 + (i % 1400), s == segs - 1,
-					       i) != 0)
+					       i, ind) != 0)
 					host_rx_poll(&seen);
-			want++;
+			want += !ind;
 			band ^= 1;
 			i++;
 		}
@@ -665,7 +667,8 @@ static void wlan_session(u32 frames)
 		host_rx_poll(&seen);
 	CHECK(seen == want && !host_bad, "frames %u of %u, bad %u", seen, want,
 	      host_bad);
-	CHECK(host_got == chip.sent, "segments %u of %u", host_got, chip.sent);
+	CHECK(host_got == chip.sent - chip.stale, "segments %u of %u - %u",
+	      host_got, chip.sent, chip.stale);
 
 	/* let the buffer task take the last returns, then stop */
 	for (t0 = cycles(); cycles() - t0 < 20000000;)
