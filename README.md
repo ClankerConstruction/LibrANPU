@@ -9,6 +9,8 @@ AN7581 and AN7583, on the host interface ABI v2.
 | `firmware/` | RV32 firmware, one image per SoC |
 | `tests/unit/` | firmware modules on the build machine |
 | `tests/qemu/` | the image on QEMU `virt` with a host model on a spare hart |
+| `driver/` | `libranpu` host driver |
+| `docs/` | firmware, driver, testing |
 
 ## Build
 
