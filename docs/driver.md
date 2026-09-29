@@ -43,7 +43,8 @@ WLAN (`driver/wlan.c`): `libranpu_rx_pool` (the `rx-pkt` pool, mapped once),
 `libranpu_wlan_attach` (fills in the pool, rx buffer layout and held ids),
 `start/stop/detach/force_host/stats`, host adaptor rings (`ha_ring_init`, `ha_rx_prod/cons`,
 `ha_tx_prod/cons`) and lines (`ha_irq`, `ha_irq_enable`, `ha_irq_ack`: each line acks only its
-own ring). `libranpu_ha_tx_regs` gives a host adaptor tx ring's register block (base, size,
+own ring). `libranpu_wlan_tx_tokens` gives the NPU token count (the `tx-pkt` region, at most 8192);
+a WiFi driver's own tokens start after it. `libranpu_ha_tx_regs` gives a host adaptor tx ring's register block (base, size,
 producer, consumer: a chip DMA ring's layout), so a WiFi driver's tx queue can drive it unchanged.
 
 Rx buffers (`driver/rxbuf.c`): `libranpu_rx_skb` (a frame's buffers as one skb), `rx_drop`,

@@ -104,7 +104,32 @@ flowchart LR
   descriptor prefetch; a descriptor whose done bit reads back set is written again (`tx_rewrite`).
 - Start reads the chip's dma index once and fails past the ring. Stop waits for the chip to take
   every slot, 50 ms at most; the audit reports `tx_chip` and `tx_host` left behind.
-- TXFREE stays on the host until NPU tokens exist.
+
+### Tx free and LAN to WiFi
+
+```mermaid
+flowchart LR
+  PPE["PPE: flow bound to WiFi<br/>(CDM4, NBQ = band)"] -->|"TDMA rx ring 0/1<br/>frame at token + 128"| TX["tx task (hart 2)"]
+  TX -->|"TXP in the headroom,<br/>desc into band ring"| CHIP["MT7990"]
+  HOST["WiFi driver queue"] -->|"16 B descriptors"| TX
+  CHIP -->|"tx free rings 6/7<br/>(host memory)"| TX
+  TX -->|"NPU token: to the free stack"| TX
+  TX -->|"host token, status, other reports"| HR["host tx free ring (HA rx 2)"]
+```
+
+- **Tx free rings stay in host memory** (the chip writes no report to rings in NPU SRAM, and then
+  stops all DMA). The host arms them; the NPU starts at the slot after the host's empty slot (its
+  cpu index), moves each taken slot's buffer to the empty slot and publishes the new empty one, as
+  the host driver does; an empty slot inside the chip's prefetch stops it.
+- Reports: NPU tokens back to the free stack; host tokens and station status as 8-byte host records;
+  any other report (tx status, events) passed on whole after an event record.
+- **LAN to WiFi:** 8192 NPU tokens, buffers in `tx-pkt`; the frame engine writes at +128, the tx task
+  writes the TXP (flags `0x80` and token, BSS, wcid, one buffer, length) after an all-zero TXD and
+  queues `{buf, 0x4C4048, buf + 128, 0}`. TDMA rx descriptors: word 1 done bit 31 and length, word 2
+  buffer, word 4 band 25 and wcid 24:14, word 6 BSS 30:24.
+- A slot takes a fresh token before its frame goes; no token or no ring room: the frame waits.
+- The frame engine's TDMA rx index survives a detach: attach starts from it. Stop and detach turn TDMA
+  rx off (TDMA global bit 2).
 
 ## Host channel
 

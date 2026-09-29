@@ -74,3 +74,19 @@ vs the host driving the same rings in the same session:
 | frames up to 2000 B (client MTU) | pass on both bands |
 | L1 SER idle and under a 900 Mb/s tx flow | recovers; under traffic the stop times out (chip paused), 8 chip and 31 host descriptors dropped, flow back within 2 s |
 | detach audit after traffic | clean |
+
+Tx free and LAN to WiFi (commit `89650a1`), TCP 10 s, DUT routes WAN to LAN:
+
+| path | client | NPU (PPE bound) | host path (software flow offload) |
+|---|---|---|---|
+| WAN to WiFi | 5 GHz EHT160 | 1.32-1.49 Gb/s at ~5 % CPU | 929-970 Mb/s at 79-83 % |
+| WAN to WiFi | 2.4 GHz | 139-161 Mb/s | 85-94 Mb/s |
+| WiFi to WAN | 5 GHz EHT160 | 611-674 Mb/s at ~4.5 % | 591-630 Mb/s at ~41 % |
+| LAN to WiFi, bridged | 5 GHz EHT160 | 895 Mb/s at 8 % (1 GbE wired link) | ~900 Mb/s at ~90 % |
+
+| check | result |
+|---|---|
+| host tx with NPU tx free | parity with NPU tx (bridged 0.101 vs 0.098 % CPU per Mb/s) |
+| tokens | every NPU token back (`txfree_npu` = `lan_frames`) |
+| L1 SER under 1.4 Gb/s WAN to WiFi | flow back within 2 s, tokens all back |
+| re-attach | LAN to WiFi resumes from the frame engine's index |
