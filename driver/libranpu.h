@@ -75,6 +75,9 @@ struct libranpu {
 	bool unhealthy;
 
 	int irq;
+	struct libranpu_rx_pool pool;
+	/* protects the host adaptor line masks */
+	spinlock_t ha_lock;
 	struct blocking_notifier_head notifier;
 	struct devlink *devlink;
 	struct dentry *debugfs;
@@ -95,6 +98,10 @@ static inline void npu_wr(struct libranpu *npu, u32 reg, u32 val)
 void libranpu_cmd_init(struct libranpu *npu);
 irqreturn_t libranpu_mbox_irq(int irq, void *data);
 irqreturn_t libranpu_mbox_thread(int irq, void *data);
+
+/* wlan.c */
+int libranpu_wlan_init(struct libranpu *npu);
+void libranpu_wlan_deinit(struct libranpu *npu);
 
 /* devlink.c */
 struct libranpu *libranpu_devlink_alloc(struct device *dev);

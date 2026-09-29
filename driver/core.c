@@ -291,6 +291,10 @@ static int libranpu_probe(struct platform_device *pdev)
 	if (err)
 		goto err_reset;
 
+	err = libranpu_wlan_init(npu);
+	if (err)
+		goto err_reset;
+
 	libranpu_debugfs_init(npu);
 	libranpu_devlink_register(npu);
 
@@ -320,6 +324,7 @@ static void libranpu_remove(struct platform_device *pdev)
 	libranpu_devlink_unregister(npu);
 	debugfs_remove_recursive(npu->debugfs);
 	libranpu_halt(npu);
+	libranpu_wlan_deinit(npu);
 	/* the rings go with devres, after the harts stopped */
 	devm_free_irq(npu->dev, npu->irq, npu);
 	libranpu_devlink_free(npu);
