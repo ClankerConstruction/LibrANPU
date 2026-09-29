@@ -321,7 +321,7 @@ static void test_ctl(void)
 
 	st = cmd(LIBRANPU_SVC_CTL, LIBRANPU_CTL_GET_TASKS, NULL, 0, rsp,
 		 &len);
-	CHECK(st == 0 && len == 11 * sizeof(struct libranpu_task_info),
+	CHECK(st == 0 && len == 12 * sizeof(struct libranpu_task_info),
 	      "tasks %d %u", (int)st, len);
 
 	/* errors */
@@ -460,6 +460,11 @@ static void test_reset(void)
 #define HRX_BASE	0x89020000
 #define HRET_BASE	0x89030000
 #define HELD_BASE	0x89038000	/* ids held from a previous attach */
+#define HTX_BASE	0x89060000	/* host tx descriptors, per band */
+#define HTX_ENTRIES	256
+#define TX_ENTRIES	128
+#define TX_DIDX0	5		/* chip dma index before the start */
+#define TX_CTRL		0x004C4048	/* 76-byte TXWI, 72-byte head */
 #define HEADROOM	64
 #define BUF_LEN		1664
 #define RX_ENTRIES	256
@@ -470,6 +475,9 @@ static void test_reset(void)
 #define HA_TX(n)	(NPU_MMIO_BASE + 0xD080 + 0x10 * (n))
 
 struct chip {
+	u32 tx_desc[2];
+	u32 tx_didx[2];
+	u32 tx_taken, tx_bad;
 	u32 rx_desc[2];
 	u32 rxd_desc;
 	u32 rx_idx[2];
@@ -482,6 +490,7 @@ struct chip {
 
 static struct chip chip;
 static u32 hrx_cons, hret_prod, host_got, host_bad, chip_held;
+static u32 htx_prod[2], htx_seq[2];
 static volatile u32 *const held_map = (u32 *)HELD_BASE;
 
 static bool held(u32 id)
@@ -553,6 +562,52 @@ static void fe_step(void)
 static u32 regs_of(int i)
 {
 	return CHIP_REGS + 0x10 * i;
+}
+
+/* chip tx: take slots up to the cpu index, check them, set done */
+static void chip_tx_step(void)
+{
+	u32 b;
+
+	for (b = 0; b < 2; b++) {
+		u32 cidx = REG32(regs_of(3 + b) + 8);
+
+		while (chip.tx_didx[b] != cidx) {
+			volatile u32 *d = (u32 *)(chip.tx_desc[b] +
+						  16 * chip.tx_didx[b]);
+			if ((d[1] & BIT(31)) || d[1] != TX_CTRL ||
+			    (d[0] >> 24) != 0x10 + b || d[2] != d[0] * 2 ||
+			    d[3] != (d[0] & 0xFFFFFF))
+				chip.tx_bad++;
+			d[1] |= BIT(31);
+			chip.tx_taken++;
+			chip.tx_didx[b] = (chip.tx_didx[b] + 1) % TX_ENTRIES;
+			REG32(regs_of(3 + b) + 0xC) = chip.tx_didx[b];
+		}
+	}
+}
+
+/* the driver: n descriptors on band b, one index write */
+static u32 host_tx(u32 b, u32 n)
+{
+	volatile u32 *ring = (u32 *)(HTX_BASE + 0x4000 * b);
+	u32 cons = REG32(HA_TX(5 + b) + 0xC), i;
+
+	for (i = 0; i < n; i++) {
+		volatile u32 *e = ring + 4 * htx_prod[b];
+		u32 v = (0x10 + b) << 24 | htx_seq[b]++;
+
+		if ((htx_prod[b] + 1) % HTX_ENTRIES == cons)
+			break;
+		e[0] = v;
+		e[1] = TX_CTRL;
+		e[2] = v * 2;
+		e[3] = v & 0xFFFFFF;
+		htx_prod[b] = (htx_prod[b] + 1) % HTX_ENTRIES;
+	}
+	wmb();
+	REG32(HA_TX(5 + b) + 8) = htx_prod[b];
+	return i;
 }
 
 /* completions the NPU has not read yet, from its published cpu index */
@@ -670,7 +725,9 @@ static void ring_desc(struct libranpu_wlan_ring *r, u8 kind, u8 band,
 
 static s32 wlan_ctl(u16 op, struct libranpu_wlan_audit *a)
 {
-	struct libranpu_wlan_ctl w = { .radio = 0, .dir = LIBRANPU_WLAN_RX };
+	struct libranpu_wlan_ctl w = {
+		.radio = 0, .dir = LIBRANPU_WLAN_RX | LIBRANPU_WLAN_TX,
+	};
 
 	return cmd(LIBRANPU_SVC_WLAN, op, &w, sizeof(w), a, NULL);
 }
@@ -712,13 +769,18 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	for (i = 0; i < nheld; i++)
 		held_map[(3 + 7 * i) / 32] |= BIT((3 + 7 * i) % 32);
 	for (i = 0; i < 4; i++)
-		REG32(HA_RX(0) + 4 * i) = 0, REG32(HA_TX(4) + 4 * i) = 0;
-	for (i = 0; i < 12; i++)
+		REG32(HA_RX(0) + 4 * i) = 0, REG32(HA_TX(4) + 4 * i) = 0,
+		REG32(HA_TX(5) + 4 * i) = 0, REG32(HA_TX(6) + 4 * i) = 0;
+	for (i = 0; i < 20; i++)
 		REG32(CHIP_REGS + 4 * i) = 0;
+	htx_prod[0] = htx_prod[1] = htx_seq[0] = htx_seq[1] = 0;
+	chip.tx_didx[0] = chip.tx_didx[1] = TX_DIDX0;
+	REG32(regs_of(3) + 0xC) = TX_DIDX0;
+	REG32(regs_of(4) + 0xC) = TX_DIDX0;
 
 	a.backend = LIBRANPU_WLAN_RRO31;
 	a.bands = 2;
-	a.nrings = 5;
+	a.nrings = 9;
 	a.link_win[0] = 1;
 	a.link_win[1] = 0;
 	a.pool_base = POOL_BASE;
@@ -738,6 +800,15 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 		  HRX_BASE);
 	ring_desc(&a.ring[4], LIBRANPU_RING_HOST_RET, 0, 0, HRET_ENTRIES, 4, 4,
 		  HRET_BASE);
+	/* band 1 tx on link 0, as on the two-link chip */
+	ring_desc(&a.ring[5], LIBRANPU_RING_TX_DATA, 0, 0, TX_ENTRIES, 16,
+		  regs_of(3), 0);
+	ring_desc(&a.ring[6], LIBRANPU_RING_TX_DATA, 1, 0, TX_ENTRIES, 16,
+		  regs_of(4), 0);
+	ring_desc(&a.ring[7], LIBRANPU_RING_HOST_TX, 0, 0, HTX_ENTRIES, 16, 5,
+		  HTX_BASE);
+	ring_desc(&a.ring[8], LIBRANPU_RING_HOST_TX, 1, 0, HTX_ENTRIES, 16, 6,
+		  HTX_BASE + 0x4000);
 
 	st = cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_ATTACH, &a, sizeof(a),
 		 &rsp, NULL);
@@ -751,6 +822,9 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	chip.rx_desc[0] = rsp.ring_base[0] | 0x80000000;
 	chip.rx_desc[1] = rsp.ring_base[1] | 0x80000000;
 	chip.rxd_desc = rsp.ring_base[2] | 0x80000000;
+	chip.tx_desc[0] = rsp.ring_base[5] | 0x80000000;
+	chip.tx_desc[1] = rsp.ring_base[6] | 0x80000000;
+	chip.tx_taken = chip.tx_bad = 0;
 	/* link 0 on window 1: its span covers rx band 0 and RXDMAD_C */
 	CHECK(REG32(NPU_MMIO_BASE + 0x13008) <= rsp.ring_base[0] &&
 	      REG32(NPU_MMIO_BASE + 0x1300c) >= rsp.ring_base[2] + 16 * RXD_ENTRIES,
@@ -760,6 +834,8 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	CHECK(wlan_ctl(LIBRANPU_WLAN_START, NULL) == 0, "start");
 	CHECK(REG32(regs_of(0) + 8) == RX_ENTRIES - 1, "rx0 cidx %u",
 	      REG32(regs_of(0) + 8));
+	CHECK(REG32(regs_of(3) + 8) == TX_DIDX0, "tx0 cidx %u",
+	      REG32(regs_of(3) + 8));
 
 	/* single frames on both bands, then 3-segment chains */
 	for (i = 0, t0 = cycles(); i < frames; ) {
@@ -770,6 +846,10 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 
 		if (i == frames / 3)
 			host_ret_held(nheld / 2);
+		/* host tx on both bands; the chip takes slots now and then */
+		host_tx(i & 1, 1 + i % 5);
+		if (i % 3 == 0)
+			chip_tx_step();
 		if (chip_rxd_used() + segs < RXD_ENTRIES - 8) {
 			for (s = 0; s < segs; s++)
 				while (chip_rx(band, 60 + (i % 1400), s == segs - 1,
@@ -804,6 +884,21 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	      "stats frames %u stale %u gap %u segs %u bound %u", ws.rx_frames,
 	      ws.rx_stale, ws.rx_ind[6], ws.host_segs, ws.ppe_bound);
 
+	/* the chip takes what is left of the host's tx */
+	for (t0 = cycles(); cycles() - t0 < TIMEOUT &&
+	     (REG32(HA_TX(5) + 0xC) != htx_prod[0] ||
+	      REG32(HA_TX(6) + 0xC) != htx_prod[1] ||
+	      chip.tx_taken != htx_seq[0] + htx_seq[1]);)
+		chip_tx_step();
+	CHECK(chip.tx_taken == htx_seq[0] + htx_seq[1] && !chip.tx_bad,
+	      "tx taken %u of %u, bad %u", chip.tx_taken,
+	      htx_seq[0] + htx_seq[1], chip.tx_bad);
+	CHECK(cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w, sizeof(w),
+		  &ws, NULL) == 0 && ws.tx_descs[0] == htx_seq[0] &&
+	      ws.tx_descs[1] == htx_seq[1],
+	      "tx stats %u %u full %u %u rewrite %u", ws.tx_descs[0],
+	      ws.tx_descs[1], ws.tx_full[0], ws.tx_full[1], ws.tx_rewrite);
+
 	/* let the buffer task take the last returns, then stop */
 	for (t0 = cycles(); cycles() - t0 < 20000000;)
 		;
@@ -811,11 +906,11 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	CHECK(st == 0, "stop %d", (int)st);
 	CHECK(au.free + au.chip + au.host == POOL_IDS &&
 	      au.host == nheld - nheld / 2 && !au.lost && !au.transit &&
-	      !au.fe && !chip_held,
+	      !au.fe && !chip_held && !au.tx_chip && !au.tx_host,
 	      "audit free %u chip %u host %u transit %u fe %u lost %u, chip had %u held",
 	      au.free, au.chip, au.host, au.transit, au.fe, au.lost, chip_held);
-	out("wlan: %u frames to host, %u bound (%u segments), audit free %u chip %u host %u\n",
-	    seen, bound, host_got, au.free, au.chip, au.host);
+	out("wlan: %u frames to host, %u bound (%u segments), audit free %u chip %u host %u, tx %u\n",
+	    seen, bound, host_got, au.free, au.chip, au.host, chip.tx_taken);
 	CHECK(wlan_ctl(LIBRANPU_WLAN_DETACH, &au) == 0, "detach");
 }
 
