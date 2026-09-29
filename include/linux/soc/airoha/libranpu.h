@@ -58,7 +58,13 @@ void libranpu_rx_drop(struct libranpu *npu,
 /* up to max ids the NPU may reuse, for the return ring */
 u32 libranpu_rx_reclaim(struct libranpu *npu, u32 *ids, u32 max);
 
-/* fills in the rx pool fields of req */
+/*
+ * Tokens [0, n) are the NPU's for LAN to WiFi once tx rings attach;
+ * a WiFi driver's own tokens start at n. 0: no LAN to WiFi.
+ */
+u32 libranpu_wlan_tx_tokens(struct libranpu *npu);
+
+/* fills in the rx pool fields of req, and the tx ones with tx rings */
 int libranpu_wlan_attach(struct libranpu *npu,
 			 struct libranpu_wlan_attach *req,
 			 struct libranpu_wlan_attach_rsp *rsp);

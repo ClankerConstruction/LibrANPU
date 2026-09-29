@@ -25,6 +25,28 @@
 /* the lines follow the mailbox and the watchdogs when not named */
 #define HA_FIRST_IRQ		9
 
+/* LAN to WiFi buffers: only the frame engine and the chip touch them */
+static void libranpu_tx_pool_init(struct libranpu *npu)
+{
+	struct resource res;
+	u32 tokens;
+
+	if (of_reserved_mem_region_to_resource_byname(npu->dev->of_node,
+						      "tx-pkt", &res))
+		return;
+
+	tokens = min_t(u32, resource_size(&res) / LIBRANPU_RX_BUF_SIZE,
+		       LIBRANPU_TX_TOKENS);
+	if (res.start < NPU_DRAM_WIN_START ||
+	    res.start + (u64)tokens * LIBRANPU_RX_BUF_SIZE > NPU_DRAM_WIN_END ||
+	    !IS_ALIGNED(res.start, LIBRANPU_RX_BUF_SIZE)) {
+		dev_warn(npu->dev, "tx-pkt %pR outside the NPU window\n", &res);
+		return;
+	}
+	npu->tx_pool = res.start;
+	npu->tx_tokens = tokens;
+}
+
 /*
  * The pool must be ordinary memory the kernel maps: reserved, not
  * no-map, so the CPU reads it cached after an invalidate.
@@ -36,6 +58,7 @@ int libranpu_wlan_init(struct libranpu *npu)
 	u32 ids;
 
 	spin_lock_init(&npu->ha_lock);
+	libranpu_tx_pool_init(npu);
 	if (of_reserved_mem_region_to_resource_byname(npu->dev->of_node,
 						      "rx-pkt", &res))
 		return 0;
@@ -73,6 +96,12 @@ void libranpu_wlan_deinit(struct libranpu *npu)
 	p->cpu = NULL;
 }
 
+u32 libranpu_wlan_tx_tokens(struct libranpu *npu)
+{
+	return npu->tx_tokens;
+}
+EXPORT_SYMBOL_GPL(libranpu_wlan_tx_tokens);
+
 const struct libranpu_rx_pool *libranpu_rx_pool(struct libranpu *npu)
 {
 	return npu->pool.cpu ? &npu->pool : NULL;
@@ -99,6 +128,7 @@ int libranpu_wlan_attach(struct libranpu *npu,
 			 struct libranpu_wlan_attach_rsp *rsp)
 {
 	u32 i, ring_ids = 0;
+	bool tx = false;
 	u16 len = sizeof(*rsp);
 
 	if (!(le32_to_cpu(npu->caps.services) & LIBRANPU_SVC_F_WLAN))
@@ -106,9 +136,15 @@ int libranpu_wlan_attach(struct libranpu *npu,
 	if (!npu->pool.cpu || req->nrings > LIBRANPU_WLAN_RINGS)
 		return -EINVAL;
 
-	for (i = 0; i < req->nrings; i++)
+	for (i = 0; i < req->nrings; i++) {
 		if (req->ring[i].kind == LIBRANPU_RING_RX_DATA)
 			ring_ids += le16_to_cpu(req->ring[i].entries);
+		tx |= req->ring[i].kind == LIBRANPU_RING_TX_DATA;
+	}
+	if (tx && npu->tx_tokens) {
+		req->tx_pool_base = cpu_to_le32(npu->tx_pool);
+		req->npu_tokens = cpu_to_le16(npu->tx_tokens);
+	}
 	req->pool_base = cpu_to_le32(npu->pool.dma);
 	req->pool_ids = cpu_to_le32(npu->pool.ids);
 	/* the stack's skb_shared_info goes after the chip's bytes */

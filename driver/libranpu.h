@@ -28,6 +28,9 @@
 #define NPU_DRAM_WIN_START		0x80000000ull
 #define NPU_DRAM_WIN_END		0xc0000000ull
 
+/* NPU tokens when the tx-pkt region holds them; the host's come after */
+#define LIBRANPU_TX_TOKENS		8192
+
 #define NPU_CMD_TIMEOUT_MS		1000
 #define NPU_BOOT_TIMEOUT_MS		2000
 
@@ -99,6 +102,8 @@ struct libranpu {
 	int irq;
 	struct libranpu_rx_pool pool;
 	struct libranpu_rxb rxb;
+	phys_addr_t tx_pool;		/* LAN to WiFi token buffers */
+	u32 tx_tokens;
 	/* protects the host adaptor line masks */
 	spinlock_t ha_lock;
 	struct blocking_notifier_head notifier;
