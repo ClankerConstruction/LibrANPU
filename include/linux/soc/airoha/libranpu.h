@@ -70,6 +70,8 @@ int libranpu_wlan_detach(struct libranpu *npu, u8 radio,
 int libranpu_wlan_force_host(struct libranpu *npu, u8 radio, bool on);
 int libranpu_wlan_stats(struct libranpu *npu, u8 radio,
 			struct libranpu_wlan_stats *stats);
+int libranpu_wlan_tx_stats(struct libranpu *npu, u8 radio,
+			   struct libranpu_wlan_tx_stats *stats);
 
 /*
  * Host adaptor rings. rx: NPU to host, tx: host to NPU. Each ring has a

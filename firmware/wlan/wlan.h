@@ -22,6 +22,7 @@
 /* rx slot handed to the chip: buffer length, to host */
 #define WLAN_RX_DESC_LEN	GENMASK(29, 16)
 #define WLAN_RX_DESC_TO_HOST	BIT(8)
+#define WLAN_RX_DESC_LAST	BIT(30)
 #define WLAN_RX_DESC_DONE	BIT(31)
 /* chip tx descriptor word 1: set by the chip once it took the slot */
 #define WLAN_TX_DESC_DONE	BIT(31)
@@ -99,6 +100,9 @@ struct wlan_radio {
 	struct wlan_host_ring hret;
 	struct wlan_ring tx[WLAN_BANDS];	/* chip tx rings, tx task */
 	struct wlan_host_ring htx[WLAN_BANDS];	/* host descriptors */
+	struct wlan_ring txfree[WLAN_BANDS];	/* chip tx free rings, tx task */
+	struct wlan_host_ring htxf;	/* tx free records to the host */
+	u32 txfree_ids;			/* pool ids under the tx free rings */
 	u32 tx_start[WLAN_BANDS];	/* chip dma index at start */
 	bool tx_on;
 	u32 mod_frames;
@@ -115,6 +119,7 @@ struct wlan_radio {
 	struct libranpu_wlan_audit audit;	/* buffer task, when stopped */
 	u32 delivered;			/* host task: ids given to the host */
 	struct libranpu_wlan_stats stats;
+	struct libranpu_wlan_tx_stats txstats;
 };
 
 extern struct wlan_radio wlan_radio;

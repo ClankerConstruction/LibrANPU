@@ -299,12 +299,19 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 		"host_segs", "host_full", "host_dropped", "buf_refill0",
 		"buf_refill1", "buf_returned", "buf_bad_ret", "buf_empty",
 		"ppe_tx", "ppe_full", "ppe_bound", "ppe_unbound", "ppe_bad_id",
-		"tx_descs0", "tx_descs1", "tx_full0", "tx_full1", "tx_rewrite",
 	};
+	static const char * const tx_names[] = {
+		"tx_descs0", "tx_descs1", "tx_full0", "tx_full1", "tx_rewrite",
+		"txfree_events0", "txfree_events1", "txfree_host", "txfree_npu",
+		"txfree_bad", "txfree_full",
+	};
+	struct libranpu_wlan_tx_stats tx;
+	const __le32 *tv = (const __le32 *)&tx;
 	int i, err;
 
 	BUILD_BUG_ON(sizeof(names) / sizeof(names[0]) !=
 		     offsetof(typeof(st), ppe_crsn) / 4);
+	BUILD_BUG_ON(ARRAY_SIZE(tx_names) != sizeof(tx) / 4);
 	err = libranpu_wlan_stats(s->private, 0, &st);
 	if (err)
 		return err;
@@ -315,6 +322,12 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 		if (st.ppe_crsn[i])
 			seq_printf(s, "ppe_crsn%02x %u\n", i,
 				   le16_to_cpu(st.ppe_crsn[i]));
+	err = libranpu_wlan_tx_stats(s->private, 0, &tx);
+	if (err)
+		return err;
+	for (i = 0; i < ARRAY_SIZE(tx_names); i++)
+		if (tv[i])
+			seq_printf(s, "%s %u\n", tx_names[i], le32_to_cpu(tv[i]));
 	/* host side, read without the NAPI context */
 	seq_printf(s, "host_lent_frames %llu\nhost_copied_frames %llu\n",
 		   b->lent_frames, b->copied_frames);

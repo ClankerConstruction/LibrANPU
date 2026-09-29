@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		2
+#define LIBRANPU_ABI_MINOR		3
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -348,7 +348,7 @@ struct libranpu_wlan_ctl {
 	__u8 radio;
 	__u8 dir;			/* LIBRANPU_WLAN_RX | _TX */
 	__u8 on;			/* FORCE_HOST */
-	__u8 rsv;
+	__u8 page;			/* GET_STATS: 0 rx, 1 tx */
 };
 
 /* STOP and DETACH answer where every rx buffer id is */
@@ -383,13 +383,42 @@ struct libranpu_wlan_stats {
 	__le32 ppe_bound;		/* forwarded, id back */
 	__le32 ppe_unbound;		/* back to the host with FOE, CRSN */
 	__le32 ppe_bad_id;
-	__le32 tx_descs[2];		/* per band: host descriptors to the chip */
-	__le32 tx_full[2];		/* per band: passes the chip ring was full */
-	__le32 tx_rewrite;		/* descriptor writes the chip overwrote */
 	__le16 ppe_crsn[32];		/* unbound returns per CPU reason, wrap */
 };
 
+/* GET_STATS page 1, the tx task's */
+struct libranpu_wlan_tx_stats {
+	__le32 descs[2];		/* per band: host descriptors to the chip */
+	__le32 full[2];			/* per band: passes the chip ring was full */
+	__le32 rewrite;			/* descriptor writes the chip overwrote */
+	__le32 txfree_events[2];	/* per tx free ring: chip reports */
+	__le32 txfree_host;		/* host token records */
+	__le32 txfree_npu;		/* NPU tokens freed */
+	__le32 txfree_bad;		/* not a report, old version or cut short */
+	__le32 txfree_full;		/* host tx free ring full: waited */
+};
+
 #define LIBRANPU_RX_BUF_SIZE		2048
+
+/*
+ * Host tx free ring entry, 8 bytes, NPU to host, in the order of the
+ * chip's reports. A status entry counts for the station, not a token.
+ */
+struct libranpu_host_txfree {
+	__le16 token;
+	__le16 wcid;			/* 0xffff: no station */
+	__u8 kind;			/* enum libranpu_txfree_kind */
+	__u8 count;			/* STATUS: transmit count */
+	__u8 failed;			/* STATUS: the last try failed */
+	__u8 rsv;
+};
+
+enum libranpu_txfree_kind {
+	LIBRANPU_TXFREE_TOKEN = 1,
+	LIBRANPU_TXFREE_STATUS,
+};
+
+#define LIBRANPU_TXFREE_NO_WCID		0xffff
 
 /*
  * Host rx ring entry, 24 bytes. The NPU writes words 1-3, then word 0.
@@ -570,6 +599,8 @@ LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_evt_fatal) <=
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_dbg_hart) == 48);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_dbg_task) == 32);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_wlan_ring) == 16);
+LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_host_txfree) == 8);
+LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_wlan_tx_stats) <= 240);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_wlan_attach) <=
 		    LIBRANPU_CMD_PAYLOAD);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_host_rx) == 24);

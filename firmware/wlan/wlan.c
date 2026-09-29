@@ -39,6 +39,7 @@ static int check_ring(const struct libranpu_wlan_attach *a,
 	case LIBRANPU_RING_RX_DATA:
 	case LIBRANPU_RING_RXDMAD_C:
 	case LIBRANPU_RING_TX_DATA:
+	case LIBRANPU_RING_TXFREE:
 		if (d->entry_size != 16 || d->entries < 64 ||
 		    d->entries > WLAN_RING_MAX || d->link > 1 || !d->regs ||
 		    d->band >= a->bands)
@@ -53,6 +54,12 @@ static int check_ring(const struct libranpu_wlan_attach *a,
 	case LIBRANPU_RING_HOST_RET:
 		if (d->entry_size != 4 || d->regs >= HOST_RINGS ||
 		    d->entries < 64 || d->entries > 2 * a->pool_ids)
+			return -EINVAL;
+		return 0;
+	case LIBRANPU_RING_HOST_TXFREE:
+		if (d->entry_size != sizeof(struct libranpu_host_txfree) ||
+		    d->regs >= HOST_RINGS || d->entries < 64 ||
+		    d->entries > WLAN_RING_MAX)
 			return -EINVAL;
 		return 0;
 	case LIBRANPU_RING_HOST_TX:
@@ -90,7 +97,8 @@ static int place_link(struct wlan_radio *r,
 
 		if ((d->kind == LIBRANPU_RING_RX_DATA ||
 		     d->kind == LIBRANPU_RING_RXDMAD_C ||
-		     d->kind == LIBRANPU_RING_TX_DATA) && d->link == link)
+		     d->kind == LIBRANPU_RING_TX_DATA ||
+		     d->kind == LIBRANPU_RING_TXFREE) && d->link == link)
 			total += chip_bytes(d);
 	}
 	if (!total)
@@ -112,6 +120,8 @@ static int place_link(struct wlan_radio *r,
 			w = &r->rxdmad;
 		else if (d->kind == LIBRANPU_RING_TX_DATA)
 			w = &r->tx[d->band];
+		else if (d->kind == LIBRANPU_RING_TXFREE)
+			w = &r->txfree[d->band];
 		else
 			continue;
 
@@ -151,6 +161,21 @@ static void fill_rings(struct wlan_radio *r)
 	for (b = 0; b < r->nbands; b++)
 		for (i = 0; i < r->tx[b].entries; i++)
 			REG32(r->tx[b].desc + 16 * i + 4) = WLAN_TX_DESC_DONE;
+	/* tx free: each slot keeps its buffer for good */
+	for (b = 0; b < WLAN_BANDS; b++) {
+		struct wlan_ring *w = &r->txfree[b];
+
+		for (i = 0; i < w->entries; i++) {
+			volatile u32 *d = (u32 *)(w->desc + 16 * i);
+
+			pool_get(&r->pool, &id, 1);
+			d[0] = wlan_pool_bus(r, id);
+			d[2] = 0;
+			d[3] = 0;
+			d[1] = FIELD_PREP(WLAN_RX_DESC_LEN, LIBRANPU_RX_BUF_SIZE);
+		}
+		r->txfree_ids += w->entries;
+	}
 }
 
 static int wlan_attach(struct cmd_ctx *c)
@@ -190,7 +215,8 @@ static int wlan_attach(struct cmd_ctx *c)
 		err = check_ring(a, d);
 		if (err)
 			return err;
-		if (d->kind == LIBRANPU_RING_RX_DATA)
+		if (d->kind == LIBRANPU_RING_RX_DATA ||
+		    d->kind == LIBRANPU_RING_TXFREE)
 			need += d->entries;
 		if (d->kind == LIBRANPU_RING_HOST_RX)
 			host_ring(&r->hrx[d->band], d, HOST_RX_REGS(d->regs));
@@ -198,6 +224,8 @@ static int wlan_attach(struct cmd_ctx *c)
 			host_ring(&r->hret, d, HOST_TX_REGS(d->regs));
 		if (d->kind == LIBRANPU_RING_HOST_TX)
 			host_ring(&r->htx[d->band], d, HOST_TX_REGS(d->regs));
+		if (d->kind == LIBRANPU_RING_HOST_TXFREE)
+			host_ring(&r->htxf, d, HOST_RX_REGS(d->regs));
 	}
 	if (need >= a->pool_ids || !r->hrx[0].base || !r->hret.base)
 		return -EINVAL;
@@ -236,7 +264,8 @@ static int wlan_attach(struct cmd_ctx *c)
 	if (!err)
 		err = ppe_attach(r);
 	for (i = 0; i < WLAN_BANDS && !err; i++)
-		if (!r->tx[i].desc != !r->htx[i].base)
+		if (!r->tx[i].desc != !r->htx[i].base ||
+		    (r->txfree[i].desc && !r->htxf.base))
 			err = -EINVAL;
 	if (err || !r->rx[0].desc || !r->rxdmad.desc ||
 	    (r->nbands > 1 && !r->rx[1].desc)) {
@@ -286,6 +315,9 @@ static int wlan_start(struct cmd_ctx *c)
 			return -EIO;
 		REG32(r->tx[b].regs + 8) = r->tx_start[b];
 	}
+	for (b = 0; b < WLAN_BANDS && r->tx_on; b++)
+		if (r->txfree[b].desc)
+			REG32(r->txfree[b].regs + 8) = r->txfree[b].entries - 1;
 	wmb();
 	WRITE_ONCE(r->state, WLAN_RUNNING);
 	return 0;
@@ -373,8 +405,13 @@ static int wlan_get_stats(struct cmd_ctx *c)
 {
 	const struct libranpu_wlan_ctl *w = (const void *)c->req;
 
-	if (w->radio)
+	if (w->radio || w->page > 1)
 		return -EINVAL;
+	if (w->page) {
+		memcpy(c->rsp, &wlan_radio.txstats, sizeof(wlan_radio.txstats));
+		c->rsp_len = sizeof(wlan_radio.txstats);
+		return 0;
+	}
 	memcpy(c->rsp, &wlan_radio.stats, sizeof(wlan_radio.stats));
 	c->rsp_len = sizeof(wlan_radio.stats);
 	return 0;

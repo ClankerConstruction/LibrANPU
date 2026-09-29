@@ -126,7 +126,7 @@ static void buf_audit(struct wlan_radio *r)
 			      WLAN_RX_DESC_DONE))
 				chip++;
 	a->free = r->pool.top;
-	a->chip = chip;
+	a->chip = chip + r->txfree_ids;
 	a->host = READ_ONCE(r->delivered) - bs.returned;
 	a->transit = spsc_avail(&bs.from_rx, 1) + spsc_avail(&bs.from_host, 1);
 	a->fe = ppe_held(r);

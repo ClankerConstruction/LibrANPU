@@ -107,7 +107,8 @@ int libranpu_wlan_attach(struct libranpu *npu,
 		return -EINVAL;
 
 	for (i = 0; i < req->nrings; i++)
-		if (req->ring[i].kind == LIBRANPU_RING_RX_DATA)
+		if (req->ring[i].kind == LIBRANPU_RING_RX_DATA ||
+		    req->ring[i].kind == LIBRANPU_RING_TXFREE)
 			ring_ids += le16_to_cpu(req->ring[i].entries);
 	req->pool_base = cpu_to_le32(npu->pool.dma);
 	req->pool_ids = cpu_to_le32(npu->pool.ids);
@@ -159,6 +160,19 @@ int libranpu_wlan_stats(struct libranpu *npu, u8 radio,
 			    &len);
 }
 EXPORT_SYMBOL_GPL(libranpu_wlan_stats);
+
+int libranpu_wlan_tx_stats(struct libranpu *npu, u8 radio,
+			   struct libranpu_wlan_tx_stats *stats)
+{
+	struct libranpu_wlan_ctl c = { .radio = radio, .page = 1 };
+	u16 len = sizeof(*stats);
+
+	memset(stats, 0, sizeof(*stats));
+	return libranpu_cmd(npu, LIBRANPU_SVC_WLAN,
+			    LIBRANPU_WLAN_GET_STATS, &c, sizeof(c), stats,
+			    &len);
+}
+EXPORT_SYMBOL_GPL(libranpu_wlan_tx_stats);
 
 void libranpu_ha_ring_init(struct libranpu *npu, bool rx, u32 ring,
 			   dma_addr_t base, u32 entries)
