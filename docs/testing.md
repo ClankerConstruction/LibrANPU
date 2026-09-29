@@ -90,3 +90,14 @@ Tx free and LAN to WiFi (commit `89650a1`), TCP 10 s, DUT routes WAN to LAN:
 | tokens | every NPU token back (`txfree_npu` = `lan_frames`) |
 | L1 SER under 1.4 Gb/s WAN to WiFi | flow back within 2 s, tokens all back |
 | re-attach | LAN to WiFi resumes from the frame engine's index |
+
+Per-station limit (commit `522f123`), 16 TCP streams WAN to the 2.4 GHz client, `wlan_sta_q` sampled
+each second:
+
+| limit | frames in the chip, avg (max) | delay in the chip, avg (max) | Mb/s |
+|---|---|---|---|
+| off | 694 (1265), 1653 (5397) | 41 ms (70), 152 ms (376) | 133, 140 |
+| on | 278 (491), 357 (529) | 19 ms (28), 16 ms (27) | 130, 138 |
+
+With 4 streams the chip holds 56-373 frames (3-16 ms) and the limit rarely acts; the DUT's ping to
+the client (~90 ms average, a 1 s outlier each run) is dominated by queues outside the NPU.

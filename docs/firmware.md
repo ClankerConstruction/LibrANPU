@@ -130,6 +130,12 @@ flowchart LR
 - A slot takes a fresh token before its frame goes; no token or no ring room: the frame waits.
 - The frame engine's TDMA rx index survives a detach: attach starts from it. Stop and detach turn TDMA
   rx off (TDMA global bit 2).
+- **Per-station limit** (`wlan/aqm.c`, stations by wcid < 1024): sent and freed counts, one frame timed
+  through the chip at a time. A hard limit, and CoDel once the queue stands (at least 64
+  frames and the timed delay at least 10 ms) for 100 ms: drops spaced interval / sqrt(count), frames
+  of 256 bytes or less pass. The drop happens before a token is taken. `WLAN_AQM` reads and sets the
+  parameters, `WLAN_STA_Q` gives a station's frames and delay in the chip. Host frames are not counted
+  (mac80211 and AQL queue them).
 
 ## Host channel
 

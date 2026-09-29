@@ -52,7 +52,8 @@ Rx buffers (`driver/rxbuf.c`): `libranpu_rx_skb` (a frame's buffers as one skb),
 
 debugfs: `status`, `dbg_block`, `probe`, `cmd_bench`, `ha_probe`, `wlan_stats` (NPU counters, then
 `host_lent_frames`, `host_copied_frames`, `host_reclaimed`, `host_lent_now N of MAX`),
-`wlan_force_host`, `wlan_rx_lend` (bench switches; devlink later).
+`wlan_force_host`, `wlan_rx_lend`, `wlan_aqm` (`on limit target delay_us interval_us min_q small`),
+`wlan_sta_q` (write a wcid, read its frames and delay in the chip) (bench switches; devlink later).
 
 ## Zero-copy rx
 
