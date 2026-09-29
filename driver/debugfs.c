@@ -6,6 +6,7 @@
 
 #include <linux/debugfs.h>
 #include <linux/io.h>
+#include <linux/math64.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
@@ -166,12 +167,40 @@ static const struct file_operations probe_fops = {
 	.llseek = default_llseek,
 };
 
+/* round trip of NOP commands: doorbell, NPU, event, wake-up */
+static int cmd_bench_show(struct seq_file *s, void *data)
+{
+	struct libranpu *npu = s->private;
+	u64 min = U64_MAX, max = 0, sum = 0, dt;
+	u32 i, n = 1000, evt0 = npu->evt_cons;
+	ktime_t t0;
+	int err;
+
+	for (i = 0; i < n; i++) {
+		t0 = ktime_get();
+		err = libranpu_cmd(npu, LIBRANPU_SVC_CTL, LIBRANPU_CTL_NOP,
+				   NULL, 0, NULL, NULL);
+		if (err)
+			return err;
+		dt = ktime_to_ns(ktime_sub(ktime_get(), t0));
+		min = min(min, dt);
+		max = max(max, dt);
+		sum += dt;
+	}
+	seq_printf(s, "%u commands: min %llu avg %llu max %llu ns, %u events\n",
+		   n, min, div_u64(sum, n), max, npu->evt_cons - evt0);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(cmd_bench);
+
 void libranpu_debugfs_init(struct libranpu *npu)
 {
 	npu->debugfs = debugfs_create_dir(dev_name(npu->dev), NULL);
 	debugfs_create_file("status", 0400, npu->debugfs, npu, &status_fops);
 	debugfs_create_file("dbg_block", 0400, npu->debugfs, npu,
 			    &dbg_block_fops);
+	debugfs_create_file("cmd_bench", 0400, npu->debugfs, npu,
+			    &cmd_bench_fops);
 	if (le32_to_cpu(npu->caps.services) & LIBRANPU_SVC_F_DBG)
 		debugfs_create_file("probe", 0600, npu->debugfs, npu,
 				    &probe_fops);
