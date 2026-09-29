@@ -5,7 +5,11 @@
  */
 
 #include <linux/debugfs.h>
+#include <linux/delay.h>
+#include <linux/dma-mapping.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/platform_device.h>
 #include <linux/math64.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -193,6 +197,138 @@ static int cmd_bench_show(struct seq_file *s, void *data)
 }
 DEFINE_SHOW_ATTRIBUTE(cmd_bench);
 
+/*
+ * Host adaptor map: for rx ring r and line l, route status bit 16+r to
+ * line l, have the NPU write the ring's dma index, count the lines.
+ */
+#define HA_REG(x)		(0x30d000 + (x))
+#define HA_STATUS		HA_REG(0x30)
+#define HA_MASK(l)		HA_REG(0x34 + 4 * (l))
+#define HA_RX_BASE(r)		HA_REG(0x180 + 0x10 * (r))
+#define HA_NPU_ADDR(x)		(0x1ec0d000 + (x))
+#define HA_LINES		6
+#define HA_FIRST_IRQ		9
+
+struct ha_probe {
+	struct libranpu *npu;
+	int irq[HA_LINES];
+	atomic_t hits[HA_LINES];
+	u32 status[HA_LINES];
+};
+
+static irqreturn_t ha_probe_irq(int irq, void *data)
+{
+	struct ha_probe *hp = data;
+	int l;
+
+	for (l = 0; l < HA_LINES; l++)
+		if (hp->irq[l] == irq)
+			break;
+	if (l == HA_LINES)
+		return IRQ_NONE;
+	hp->status[l] = npu_rr(hp->npu, HA_STATUS);
+	npu_wr(hp->npu, HA_STATUS, hp->status[l]);
+	/* an unacked level line must not storm */
+	if (atomic_inc_return(&hp->hits[l]) > 64)
+		disable_irq_nosync(irq);
+	return IRQ_HANDLED;
+}
+
+static int ha_poke(struct libranpu *npu, u32 addr, u32 val)
+{
+	struct libranpu_dbg_poke p = {
+		.addr = cpu_to_le32(addr), .val = cpu_to_le32(val),
+	};
+
+	return libranpu_cmd(npu, LIBRANPU_SVC_DBG, LIBRANPU_DBG_POKE,
+			    &p, sizeof(p), NULL, NULL);
+}
+
+static void ha_probe_one(struct seq_file *s, struct ha_probe *hp, int r,
+			 int l, dma_addr_t ring)
+{
+	struct libranpu *npu = hp->npu;
+	u32 hits[HA_LINES], st0, st1;
+	int i, err;
+
+	for (i = 0; i < HA_LINES; i++) {
+		npu_wr(npu, HA_MASK(i), i == l ? BIT(16 + r) : 0);
+		atomic_set(&hp->hits[i], 0);
+		hp->status[i] = 0;
+	}
+	npu_wr(npu, HA_RX_BASE(r), ring);
+	npu_wr(npu, HA_RX_BASE(r) + 4, 8);
+	npu_wr(npu, HA_RX_BASE(r) + 0xc, 0);
+	npu_wr(npu, HA_STATUS, ~0);
+	st0 = npu_rr(npu, HA_STATUS);
+
+	err = ha_poke(npu, HA_NPU_ADDR(0x188 + 0x10 * r), 1);
+	usleep_range(2000, 3000);
+	for (i = 0; i < HA_LINES; i++)
+		hits[i] = atomic_read(&hp->hits[i]);
+	st1 = npu_rr(npu, HA_STATUS);
+
+	/* the same index again: does a rewrite raise it again */
+	ha_poke(npu, HA_NPU_ADDR(0x188 + 0x10 * r), 1);
+	usleep_range(2000, 3000);
+
+	seq_printf(s, "rx%d line%d: poke %d, status %08x -> %08x (irq %08x), didx %u, hits",
+		   r, l, err, st0, st1, hp->status[l],
+		   npu_rr(npu, HA_RX_BASE(r) + 8));
+	for (i = 0; i < HA_LINES; i++)
+		seq_printf(s, " %u", hits[i]);
+	seq_printf(s, ", again %u\n", atomic_read(&hp->hits[l]) - hits[l]);
+
+	npu_wr(npu, HA_MASK(l), 0);
+	npu_wr(npu, HA_RX_BASE(r) + 8, 0);
+	npu_wr(npu, HA_RX_BASE(r), 0);
+	npu_wr(npu, HA_RX_BASE(r) + 4, 0);
+}
+
+static int ha_probe_show(struct seq_file *s, void *data)
+{
+	struct libranpu *npu = s->private;
+	struct platform_device *pdev = to_platform_device(npu->dev);
+	struct ha_probe *hp;
+	dma_addr_t ring;
+	void *mem;
+	int l, r, err = 0;
+
+	hp = kzalloc(sizeof(*hp), GFP_KERNEL);
+	mem = dma_alloc_coherent(npu->dev, SZ_4K, &ring, GFP_KERNEL);
+	if (!hp || !mem) {
+		err = -ENOMEM;
+		goto out;
+	}
+	hp->npu = npu;
+	for (l = 0; l < HA_LINES; l++) {
+		hp->irq[l] = platform_get_irq_optional(pdev, HA_FIRST_IRQ + l);
+		if (hp->irq[l] < 0 ||
+		    request_irq(hp->irq[l], ha_probe_irq, 0, "libranpu-ha", hp)) {
+			seq_printf(s, "line%d: no irq\n", l);
+			hp->irq[l] = -1;
+		}
+	}
+	for (l = 0; l < HA_LINES; l++)
+		seq_printf(s, "mask%d %08x\n", l, npu_rr(npu, HA_MASK(l)));
+
+	for (r = 0; r < 4; r++)
+		for (l = 0; l < HA_LINES; l++)
+			ha_probe_one(s, hp, r, l, ring);
+
+	for (l = 0; l < HA_LINES; l++) {
+		npu_wr(npu, HA_MASK(l), 0);
+		if (hp->irq[l] >= 0)
+			free_irq(hp->irq[l], hp);
+	}
+out:
+	if (mem)
+		dma_free_coherent(npu->dev, SZ_4K, mem, ring);
+	kfree(hp);
+	return err;
+}
+DEFINE_SHOW_ATTRIBUTE(ha_probe);
+
 void libranpu_debugfs_init(struct libranpu *npu)
 {
 	npu->debugfs = debugfs_create_dir(dev_name(npu->dev), NULL);
@@ -204,4 +340,7 @@ void libranpu_debugfs_init(struct libranpu *npu)
 	if (le32_to_cpu(npu->caps.services) & LIBRANPU_SVC_F_DBG)
 		debugfs_create_file("probe", 0600, npu->debugfs, npu,
 				    &probe_fops);
+	if (le32_to_cpu(npu->caps.services) & LIBRANPU_SVC_F_DBG)
+		debugfs_create_file("ha_probe", 0400, npu->debugfs, npu,
+				    &ha_probe_fops);
 }
