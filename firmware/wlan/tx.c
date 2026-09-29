@@ -37,6 +37,7 @@ struct tx_state {
 	u32 tail[WLAN_BANDS];		/* oldest slot the chip holds */
 	u32 cons[WLAN_BANDS];		/* next host entry */
 	u32 fidx[WLAN_BANDS];		/* next tx free slot */
+	u32 fhole[WLAN_BANDS];		/* the one slot without a buffer */
 	u32 hf_widx;			/* host tx free ring */
 	u32 hf_cons;			/* its host index, last read */
 };
@@ -64,7 +65,8 @@ static void tx_begin(struct wlan_radio *r)
 	for (b = 0; b < WLAN_BANDS; b++) {
 		ts.head[b] = r->tx_start[b];
 		ts.tail[b] = r->tx_start[b];
-		ts.fidx[b] = r->txfree_start[b];
+		ts.fhole[b] = r->txfree_start[b];
+		ts.fidx[b] = (ts.fhole[b] + 1) % MAX(r->txfree[b].entries, 1);
 	}
 	ts.started = true;
 }
@@ -133,6 +135,18 @@ static u32 tx_band(struct wlan_radio *r, u32 b, u32 budget)
 	REG32(h->regs + HTX_CONS) = ts.cons[b];
 	r->txstats.descs[b] += n;
 	return n;
+}
+
+/* the empty slot gets buf, control word last */
+static void txf_rearm(struct wlan_ring *w, u32 slot, u32 buf, u32 arm)
+{
+	volatile u32 *d = (u32 *)(w->desc + 16 * slot);
+
+	d[0] = buf;
+	d[2] = 0;
+	d[3] = 0;
+	wmb();
+	d[1] = arm;
 }
 
 static u32 txf_room(struct wlan_radio *r)
@@ -235,8 +249,10 @@ static bool txf_report(struct wlan_radio *r, u32 b, const volatile u32 *ev,
 }
 
 /*
- * The chip's tx free reports of one ring, in host memory: each slot
- * keeps the buffer the host gave it.
+ * The chip's tx free reports of one ring, in host memory. As on the
+ * host's ring, one slot is empty and the cpu index names it: a taken
+ * slot's buffer goes to the empty slot and it becomes the empty one.
+ * The chip stops at an empty slot inside its prefetch otherwise.
  */
 static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 {
@@ -264,7 +280,8 @@ static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 			}
 			r->txstats.txfree_events[b]++;
 		}
-		d[1] = r->txfree_arm[b];
+		txf_rearm(w, ts.fhole[b], d[0], r->txfree_arm[b]);
+		ts.fhole[b] = idx;
 		idx = idx + 1 == w->entries ? 0 : idx + 1;
 		n++;
 	}
@@ -272,7 +289,7 @@ static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 		ts.fidx[b] = idx;
 		wmb();
 		REG32(r->htxf.regs + TXF_PROD) = ts.hf_widx;
-		REG32(w->regs + 8) = idx ? idx - 1 : w->entries - 1u;
+		REG32(w->regs + 8) = ts.fhole[b];
 	}
 	return n;
 }

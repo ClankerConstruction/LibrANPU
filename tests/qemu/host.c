@@ -586,8 +586,13 @@ static void chip_txfree(u32 b, bool full)
 	u32 n = chip.npend[b], len = 16 + 4 * ((n + 1) / 2), i;
 	volatile u32 *ev;
 
-	if (!n || (!full && n < TXF_BATCH / 2) || (d[1] & BIT(31)))
+	if (!n || (!full && n < TXF_BATCH / 2) ||
+	    chip.txf_idx[b] == REG32(regs_of(5 + b) + 8))
 		return;
+	if ((d[1] & BIT(31)) || !d[0]) {
+		chip.tx_bad++;
+		return;
+	}
 	if (chip.reports[b] % 4 == 3 && !chip.other_sent[b]) {
 		ev = (u32 *)d[0];
 		for (i = 0; i < 11; i++)
@@ -922,16 +927,20 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	ring_desc(&a.ring[10], LIBRANPU_RING_TXFREE, 1, 0, TXF_ENTRIES, 16,
 		  regs_of(6), TXFD_BASE + 16 * TXF_ENTRIES);
 	a.ring[9].buf64 = a.ring[10].buf64 = TXF_BUF64;
-	/* the driver armed its tx free rings; the chip is part way in */
+	/*
+	 * The driver armed its tx free rings but one slot, at its cpu
+	 * index; the chip is part way in.
+	 */
 	for (i = 0; i < 2 * TXF_ENTRIES; i++) {
 		volatile u32 *d = (u32 *)(TXFD_BASE + 16 * i);
+		bool hole = i % TXF_ENTRIES == TXF_DIDX0 - 1;
 
-		d[0] = TXFB_BASE + 2048 * i;
-		d[1] = TXF_BUF64 * 64 << 16;
+		d[0] = hole ? 0 : TXFB_BASE + 2048 * i;
+		d[1] = hole ? BIT(31) : TXF_BUF64 * 64 << 16;
 		d[2] = d[3] = 0;
 	}
 	for (i = 0; i < 2; i++) {
-		REG32(regs_of(5 + i) + 8) = TXF_ENTRIES - 1;
+		REG32(regs_of(5 + i) + 8) = TXF_DIDX0 - 1;
 		REG32(regs_of(5 + i) + 0xC) = TXF_DIDX0;
 	}
 	ring_desc(&a.ring[11], LIBRANPU_RING_HOST_TXFREE, 0, 0, HTXF_ENTRIES,

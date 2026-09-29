@@ -320,11 +320,11 @@ static int wlan_start(struct cmd_ctx *c)
 			return -EIO;
 		REG32(r->tx[b].regs + 8) = r->tx_start[b];
 	}
-	/* tx free: the host armed the ring; take slots from the chip's */
+	/* tx free: the host's empty slot is at its cpu index */
 	for (b = 0; b < WLAN_BANDS && r->tx_on; b++) {
 		if (!r->txfree[b].desc)
 			continue;
-		r->txfree_start[b] = REG32(r->txfree[b].regs + 0xC);
+		r->txfree_start[b] = REG32(r->txfree[b].regs + 8);
 		if (r->txfree_start[b] >= r->txfree[b].entries)
 			return -EIO;
 	}

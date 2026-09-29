@@ -102,7 +102,7 @@ struct wlan_radio {
 	struct wlan_host_ring htx[WLAN_BANDS];	/* host descriptors */
 	struct wlan_ring txfree[WLAN_BANDS];	/* chip tx free, host memory */
 	u32 txfree_arm[WLAN_BANDS];	/* descriptor word 1 to re-arm */
-	u32 txfree_start[WLAN_BANDS];	/* chip dma index at start */
+	u32 txfree_start[WLAN_BANDS];	/* the host's empty slot at start */
 	struct wlan_host_ring htxf;	/* tx free records to the host */
 	u32 tx_start[WLAN_BANDS];	/* chip dma index at start */
 	bool tx_on;
