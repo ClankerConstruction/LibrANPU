@@ -82,6 +82,8 @@ u32 libranpu_ha_rx_prod(struct libranpu *npu, u32 ring);
 void libranpu_ha_rx_cons(struct libranpu *npu, u32 ring, u32 idx);
 void libranpu_ha_tx_prod(struct libranpu *npu, u32 ring, u32 idx);
 u32 libranpu_ha_tx_cons(struct libranpu *npu, u32 ring);
+/* base, size, producer, consumer: the layout of a chip DMA ring's */
+void __iomem *libranpu_ha_tx_regs(struct libranpu *npu, u32 ring);
 int libranpu_ha_irq(struct libranpu *npu, u32 line);
 void libranpu_ha_irq_enable(struct libranpu *npu, u32 line, u32 rx_ring,
 			    bool on);

@@ -198,6 +198,12 @@ u32 libranpu_ha_tx_cons(struct libranpu *npu, u32 ring)
 }
 EXPORT_SYMBOL_GPL(libranpu_ha_tx_cons);
 
+void __iomem *libranpu_ha_tx_regs(struct libranpu *npu, u32 ring)
+{
+	return ring < HA_RINGS ? npu->base + HA_TX(ring) : NULL;
+}
+EXPORT_SYMBOL_GPL(libranpu_ha_tx_regs);
+
 int libranpu_ha_irq(struct libranpu *npu, u32 line)
 {
 	struct platform_device *pdev = to_platform_device(npu->dev);
