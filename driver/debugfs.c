@@ -301,13 +301,18 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 	};
 	int i, err;
 
-	BUILD_BUG_ON(sizeof(names) / sizeof(names[0]) != sizeof(st) / 4);
+	BUILD_BUG_ON(sizeof(names) / sizeof(names[0]) !=
+		     offsetof(typeof(st), ppe_crsn) / 4);
 	err = libranpu_wlan_stats(s->private, 0, &st);
 	if (err)
 		return err;
 	for (i = 0; i < ARRAY_SIZE(names); i++)
 		if (v[i])
 			seq_printf(s, "%s %u\n", names[i], le32_to_cpu(v[i]));
+	for (i = 0; i < ARRAY_SIZE(st.ppe_crsn); i++)
+		if (st.ppe_crsn[i])
+			seq_printf(s, "ppe_crsn%02x %u\n", i,
+				   le16_to_cpu(st.ppe_crsn[i]));
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(wlan_stats);

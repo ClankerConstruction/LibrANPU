@@ -60,8 +60,8 @@ int ppe_attach(struct wlan_radio *r)
 	REG32(FE_TDMA_GLO_CFG) = g | GLO_TX_EN | GLO_BURST | GLO_WB_DDONE |
 				 GLO_TX_MISC;
 	REG32(FE_TDMA_PPE_FC) |= BIT(0);
-	/* no CPU reason is forwarded by the PPE itself */
-	REG32(FE_WIFI_CRSN_MSK) = 0;
+	/* hits on bound entries go out; the CPU ones come back to us */
+	REG32(FE_WIFI_CRSN_MSK) = BIT(CRSN_HIT_BIND);
 	REG32(FE_WIFI_BUF_CFG) = (REG32(FE_WIFI_BUF_CFG) & ~BUF_CFG_CLEAR) |
 				 BUF_CFG_EN | BUF_CFG_DROP_UNHIT |
 				 BUF_CFG_TICK_1MS | BUF_CFG_TIME_THLD;
@@ -109,6 +109,7 @@ u32 ppe_take(struct wlan_radio *r, u32 budget, bool stopping)
 				  FIELD_PREP(LIBRANPU_HRX_REASON,
 					     LIBRANPU_HRX_PPE) | WRX_LAST;
 			s->ppe_unbound++;
+			s->ppe_crsn[FIELD_GET(PPE_INF_CRSN, inf)]++;
 		}
 		REG32(FE_WIFI_BUF_ID) = NPU_FE_POP;
 		n++;

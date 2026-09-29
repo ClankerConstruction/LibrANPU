@@ -27,6 +27,7 @@
 #define BUF_ID_ID		GENMASK(15, 0)
 #define PPE_INF_FOE		GENMASK(14, 0)
 #define PPE_INF_CRSN		GENMASK(20, 16)
+#define CRSN_HIT_BIND		0x1F	/* forwarded by a bound entry */
 #define TXD_LS			BIT(30)
 #define TXD_ID			GENMASK(28, 14)
 #define TXD_LEN			GENMASK(12, 0)

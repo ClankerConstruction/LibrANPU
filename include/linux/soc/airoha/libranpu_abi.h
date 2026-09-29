@@ -376,6 +376,7 @@ struct libranpu_wlan_stats {
 	__le32 ppe_bound;		/* forwarded, id back */
 	__le32 ppe_unbound;		/* back to the host with FOE, CRSN */
 	__le32 ppe_bad_id;
+	__le16 ppe_crsn[32];		/* unbound returns per CPU reason, wrap */
 };
 
 #define LIBRANPU_RX_BUF_SIZE		2048
