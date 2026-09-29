@@ -467,6 +467,10 @@ static void test_reset(void)
 #define TX_CTRL		0x004C4048	/* 76-byte TXWI, 72-byte head */
 #define TXF_ENTRIES	64		/* chip tx free rings */
 #define HTXF_BASE	0x89070000	/* tx free records to the host */
+#define TXFD_BASE	0x89072000	/* host tx free rings, per band */
+#define TXFB_BASE	0x8C000000	/* their 2 KB buffers */
+#define TXF_BUF64	27		/* 1728 bytes armed */
+#define TXF_DIDX0	3
 #define HTXF_ENTRIES	256
 #define TXF_BATCH	24		/* tokens per chip report */
 #define HEADROOM	64
@@ -584,6 +588,8 @@ static void chip_txfree(u32 b, bool full)
 	if (!n || (!full && n < TXF_BATCH / 2) || (d[1] & BIT(31)))
 		return;
 	ev = (u32 *)d[0];
+	if ((d[1] >> 16 & 0x3FFF) != TXF_BUF64 * 64)
+		chip.tx_bad++;
 	ev[0] = 6u << 27 | n << 16 | len;
 	ev[1] = 5 << 16;
 	ev[2] = BIT(31) | (5 + b) << 12;
@@ -594,6 +600,7 @@ static void chip_txfree(u32 b, bool full)
 	wmb();
 	d[1] = len << 16 | BIT(30) | BIT(31);
 	chip.txf_idx[b] = (chip.txf_idx[b] + 1) % TXF_ENTRIES;
+	REG32(regs_of(5 + b) + 0xC) = chip.txf_idx[b];
 	chip.npend[b] = 0;
 	chip.reports[b]++;
 }
@@ -840,7 +847,7 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 		REG32(HA_RX(0) + 4 * i) = 0, REG32(HA_TX(4) + 4 * i) = 0,
 		REG32(HA_TX(5) + 4 * i) = 0, REG32(HA_TX(6) + 4 * i) = 0,
 		REG32(HA_RX(2) + 4 * i) = 0;
-	for (i = 0; i < 20; i++)
+	for (i = 0; i < 28; i++)
 		REG32(CHIP_REGS + 4 * i) = 0;
 	htx_prod[0] = htx_prod[1] = htx_seq[0] = htx_seq[1] = 0;
 	chip.tx_didx[0] = chip.tx_didx[1] = TX_DIDX0;
@@ -879,9 +886,22 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	ring_desc(&a.ring[8], LIBRANPU_RING_HOST_TX, 1, 0, HTX_ENTRIES, 16, 6,
 		  HTX_BASE + 0x4000);
 	ring_desc(&a.ring[9], LIBRANPU_RING_TXFREE, 0, 0, TXF_ENTRIES, 16,
-		  regs_of(5), 0);
+		  regs_of(5), TXFD_BASE);
 	ring_desc(&a.ring[10], LIBRANPU_RING_TXFREE, 1, 0, TXF_ENTRIES, 16,
-		  regs_of(6), 0);
+		  regs_of(6), TXFD_BASE + 16 * TXF_ENTRIES);
+	a.ring[9].buf64 = a.ring[10].buf64 = TXF_BUF64;
+	/* the driver armed its tx free rings; the chip is part way in */
+	for (i = 0; i < 2 * TXF_ENTRIES; i++) {
+		volatile u32 *d = (u32 *)(TXFD_BASE + 16 * i);
+
+		d[0] = TXFB_BASE + 2048 * i;
+		d[1] = TXF_BUF64 * 64 << 16;
+		d[2] = d[3] = 0;
+	}
+	for (i = 0; i < 2; i++) {
+		REG32(regs_of(5 + i) + 8) = TXF_ENTRIES - 1;
+		REG32(regs_of(5 + i) + 0xC) = TXF_DIDX0;
+	}
 	ring_desc(&a.ring[11], LIBRANPU_RING_HOST_TXFREE, 0, 0, HTXF_ENTRIES,
 		  8, 2, HTXF_BASE);
 
@@ -899,9 +919,10 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	chip.rxd_desc = rsp.ring_base[2] | 0x80000000;
 	chip.tx_desc[0] = rsp.ring_base[5] | 0x80000000;
 	chip.tx_desc[1] = rsp.ring_base[6] | 0x80000000;
-	chip.txf_desc[0] = rsp.ring_base[9] | 0x80000000;
-	chip.txf_desc[1] = rsp.ring_base[10] | 0x80000000;
-	chip.txf_idx[0] = chip.txf_idx[1] = 0;
+	chip.txf_desc[0] = TXFD_BASE;
+	chip.txf_desc[1] = TXFD_BASE + 16 * TXF_ENTRIES;
+	chip.txf_idx[0] = chip.txf_idx[1] = TXF_DIDX0;
+	CHECK(!rsp.ring_base[9] && !rsp.ring_base[10], "tx free placed");
 	chip.npend[0] = chip.npend[1] = 0;
 	chip.reports[0] = chip.reports[1] = 0;
 	htxf_cons = htxf_tok[0] = htxf_tok[1] = 0;
