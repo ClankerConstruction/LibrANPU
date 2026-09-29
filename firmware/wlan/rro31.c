@@ -9,12 +9,13 @@
 
 #define RXD_LEN			GENMASK(29, 16)
 #define RXD_LAST		BIT(30)
-#define RXD_ERR			BIT(13)
+#define RXD_PN_FAIL		BIT(13)
 #define RXD_DST			GENMASK(12, 11)
 #define RXD_ID			GENMASK(31, 16)
 #define RXD_IND		GENMASK(15, 12)	/* indication reason */
 #define RXD_IND_REPEAT		1
 #define RXD_IND_OLDPKT		2
+#define RXD_IND_PN_FAIL		13
 #define RXD_TO_HOST		BIT(7)
 #define RXD_GEN			GENMASK(31, 28)
 #define RX_BATCH		32
@@ -38,9 +39,10 @@ static void rx_reset(struct wlan_radio *r)
 	spsc_prod_init(&rxs.drop, r->rx2buf);
 }
 
+/* every other indication reason releases a good frame */
 static u8 rx_reason(struct wlan_radio *r, u32 w1, u32 w2)
 {
-	if ((w1 & RXD_ERR) || FIELD_GET(RXD_IND, w2)) {
+	if ((w1 & RXD_PN_FAIL) || FIELD_GET(RXD_IND, w2) == RXD_IND_PN_FAIL) {
 		r->stats.rx_pn_fail++;
 		return LIBRANPU_HRX_ERROR;
 	}

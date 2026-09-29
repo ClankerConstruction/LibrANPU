@@ -653,7 +653,8 @@ static void wlan_session(u32 frames)
 	for (i = 0, t0 = cycles(); i < frames; ) {
 		bool chain = i >= frames / 2;
 		u32 segs = chain ? 3 : 1, s;
-		u32 ind = chain ? 0 : i % 10 == 5 ? 1 : 0;
+		/* one repeat and one big-gap release in ten single frames */
+		u32 ind = chain ? 0 : i % 10 == 5 ? 1 : i % 10 == 7 ? 6 : 0;
 
 		if (chip_rxd_used() + segs < RXD_ENTRIES - 8) {
 			for (s = 0; s < segs; s++)
