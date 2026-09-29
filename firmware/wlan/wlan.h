@@ -16,6 +16,8 @@
 #define WLAN_MAX_SEGS		7
 #define WLAN_RING_MAX		4096
 #define WLAN_POOL_MAX		16384
+/* NPU tokens: the chip's tx free ids are 15 bits, the host's come after */
+#define WLAN_TOKENS_MAX		16384
 #define WLAN_RX2HOST		1024	/* rx task to host task entries */
 #define WLAN_RETQ		512	/* id returns between tasks */
 
@@ -84,6 +86,19 @@ struct wlan_ppe {
 };
 
 
+/* LAN to WiFi: frame engine TDMA rx rings and NPU tokens */
+#define WLAN_LAN_RINGS		2
+#define WLAN_LAN_RING		1024
+
+struct wlan_lan {
+	u32 desc[WLAN_LAN_RINGS];	/* NPU SRAM, 32-byte descriptors */
+	u16 *slot_tok[WLAN_LAN_RINGS];	/* the token under each slot */
+	struct id_pool free;		/* tx task, after attach */
+	u32 pool;			/* token buffers, uncached */
+	u32 pool_bus;			/* host physical */
+	u32 tokens;			/* 0: no LAN to WiFi */
+};
+
 struct wlan_radio {
 	u32 state;			/* control writes */
 	u32 epoch;			/* bumped per attach */
@@ -104,6 +119,7 @@ struct wlan_radio {
 	u32 txfree_arm[WLAN_BANDS];	/* descriptor word 1 to re-arm */
 	u32 txfree_start[WLAN_BANDS];	/* the host's empty slot at start */
 	struct wlan_host_ring htxf;	/* tx free records to the host */
+	struct wlan_lan lan;
 	u32 tx_start[WLAN_BANDS];	/* chip dma index at start */
 	bool tx_on;
 	u32 mod_frames;
@@ -129,6 +145,19 @@ int wlan_rx_task(struct task *t, int budget);
 int wlan_buf_task(struct task *t, int budget);
 int wlan_host_task(struct task *t, int budget);
 int wlan_tx_task(struct task *t, int budget);
+
+/* tx task: band b's chip ring */
+u32 wlan_tx_room(struct wlan_radio *r, u32 b);
+void wlan_tx_put(struct wlan_radio *r, u32 b, u32 w0, u32 ctrl, u32 w2, u32 w3);
+
+/* lan.c: attach and start on control, the rest on the tx task */
+int lan_attach(struct wlan_radio *r, u32 base, u32 tokens);
+void lan_start(struct wlan_radio *r);
+void lan_reset(struct wlan_radio *r);
+void lan_stop(struct wlan_radio *r);
+u32 lan_drain(struct wlan_radio *r, u32 budget);
+bool lan_token_free(struct wlan_radio *r, u32 id);
+u32 lan_in_chip(struct wlan_radio *r);
 
 /* task side: the state, and after it everything control set up for it */
 static inline u32 wlan_state(struct wlan_radio *r)

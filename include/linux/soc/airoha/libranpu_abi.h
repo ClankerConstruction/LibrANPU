@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		3
+#define LIBRANPU_ABI_MINOR		4
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -335,6 +335,13 @@ struct libranpu_wlan_attach {
 	__le16 rsv;
 	/* bitmap of ids the host still holds from a previous attach, or 0 */
 	__le32 rx_held;
+	/*
+	 * LAN to WiFi: tokens [0, npu_tokens) are the NPU's, each with the
+	 * buffer tx_pool_base + token * 2048; 0 tokens: no LAN to WiFi.
+	 */
+	__le32 tx_pool_base;
+	__le16 npu_tokens;
+	__le16 rsv2;
 	struct libranpu_wlan_ring ring[LIBRANPU_WLAN_RINGS];
 };
 
@@ -364,6 +371,7 @@ struct libranpu_wlan_audit {
 	__le32 fe;			/* sent to the frame engine, not back */
 	__le32 tx_chip;			/* tx descriptors the chip had not taken */
 	__le32 tx_host;			/* host tx entries the NPU had not taken */
+	__le32 lan_tokens;		/* NPU tokens the chip had not freed */
 };
 
 /* since attach; each field is counted by one NPU task */
@@ -399,6 +407,10 @@ struct libranpu_wlan_tx_stats {
 	__le32 txfree_bad;		/* old version, cut short or too long */
 	__le32 txfree_other;		/* other chip reports passed on */
 	__le32 txfree_full;		/* host tx free ring full: waited */
+	__le32 lan_frames[2];		/* per frame engine ring: to the chip */
+	__le32 lan_no_token;		/* passes out of tokens: waited */
+	__le32 lan_ring_full;		/* passes the chip ring was full: waited */
+	__le32 lan_bad;			/* bad band or length: dropped */
 };
 
 #define LIBRANPU_RX_BUF_SIZE		2048

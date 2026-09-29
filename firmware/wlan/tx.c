@@ -36,6 +36,7 @@ struct tx_state {
 	u32 head[WLAN_BANDS];		/* next chip slot we fill */
 	u32 tail[WLAN_BANDS];		/* oldest slot the chip holds */
 	u32 cons[WLAN_BANDS];		/* next host entry */
+	u32 put[WLAN_BANDS];		/* descriptors not published yet */
 	u32 fidx[WLAN_BANDS];		/* next tx free slot */
 	u32 fhole[WLAN_BANDS];		/* the one slot without a buffer */
 	u32 hf_widx;			/* host tx free ring */
@@ -50,8 +51,11 @@ static void tx_reset(struct wlan_radio *r)
 
 	ts.epoch = r->epoch;
 	ts.started = false;
-	for (b = 0; b < WLAN_BANDS; b++)
+	for (b = 0; b < WLAN_BANDS; b++) {
 		ts.cons[b] = 0;
+		ts.put[b] = 0;
+	}
+	lan_reset(r);
 	ts.hf_widx = 0;
 	ts.hf_cons = 0;
 	if (r->htxf.base)
@@ -85,25 +89,50 @@ static u32 tx_inflight(struct wlan_ring *w, u32 b)
 	return (ts.head[b] + w->entries - ts.tail[b]) % w->entries;
 }
 
-/* one descriptor; control word last, again if the chip's late done won */
-static void tx_desc(struct wlan_radio *r, u32 d, const volatile u32 *e)
+u32 wlan_tx_room(struct wlan_radio *r, u32 b)
 {
-	u32 ctrl = e[1] & ~WLAN_TX_DESC_DONE;
+	struct wlan_ring *w = &r->tx[b];
+	s32 room = w->entries - 1 - TX_RESERVE - tx_inflight(w, b);
 
-	REG32(d) = e[0];
-	REG32(d + 8) = e[2];
-	REG32(d + 12) = e[3];
+	return room > 0 ? room : 0;
+}
+
+/* one descriptor; control word last, again if the chip's late done won */
+void wlan_tx_put(struct wlan_radio *r, u32 b, u32 w0, u32 ctrl, u32 w2, u32 w3)
+{
+	struct wlan_ring *w = &r->tx[b];
+	u32 d = w->desc + 16 * ts.head[b];
+
+	ctrl &= ~WLAN_TX_DESC_DONE;
+	REG32(d) = w0;
+	REG32(d + 8) = w2;
+	REG32(d + 12) = w3;
 	wmb();
 	REG32(d + 4) = ctrl;
 	if (unlikely(REG32(d + 4) & WLAN_TX_DESC_DONE)) {
 		r->txstats.rewrite++;
 		REG32(d + 4) = ctrl;
 	}
+	ts.head[b] = ring_next(w, ts.head[b]);
+	ts.put[b]++;
+}
+
+/* the chip's cpu index, once per pass */
+static void tx_kick(struct wlan_radio *r)
+{
+	u32 b;
+
+	for (b = 0; b < WLAN_BANDS; b++) {
+		if (!ts.put[b])
+			continue;
+		wmb();
+		REG32(r->tx[b].regs + 8) = ts.head[b];
+		ts.put[b] = 0;
+	}
 }
 
 static u32 tx_band(struct wlan_radio *r, u32 b, u32 budget)
 {
-	struct wlan_ring *w = &r->tx[b];
 	struct wlan_host_ring *h = &r->htx[b];
 	const u8 *base = plat_cached((void *)(uintptr_t)h->base);
 	u32 prod, avail, room, n;
@@ -112,26 +141,24 @@ static u32 tx_band(struct wlan_radio *r, u32 b, u32 budget)
 	avail = (prod + h->entries - ts.cons[b]) % h->entries;
 	if (!avail)
 		return 0;
-	room = w->entries - 1 - TX_RESERVE - tx_inflight(w, b);
-	if ((s32)room <= 0) {
+	room = wlan_tx_room(r, b);
+	if (!room) {
 		r->txstats.full[b]++;
 		return 0;
 	}
 
 	n = MIN(MIN(avail, room), budget);
 	for (u32 i = 0; i < n; i++) {
-		const u8 *e = base + 16 * ts.cons[b];
+		const volatile u32 *e = (const u32 *)(base + 16 * ts.cons[b]);
 
 		/* the host may have added entries to this line since */
 		if (!i || !((uintptr_t)e & (LINE - 1)))
 			plat_dcache_inv((const void *)((uintptr_t)e & ~(LINE - 1)));
-		tx_desc(r, w->desc + 16 * ts.head[b], (const volatile u32 *)e);
-		ts.head[b] = ring_next(w, ts.head[b]);
+		wlan_tx_put(r, b, e[0], e[1], e[2], e[3]);
 		ts.cons[b] = (ts.cons[b] + 1) % h->entries;
 	}
 
 	wmb();
-	REG32(w->regs + 8) = ts.head[b];
 	REG32(h->regs + HTX_CONS) = ts.cons[b];
 	r->txstats.descs[b] += n;
 	return n;
@@ -241,6 +268,10 @@ static bool txf_report(struct wlan_radio *r, u32 b, const volatile u32 *ev,
 			if (id == TXF_ID)
 				continue;
 			seen++;
+			if (lan_token_free(r, id)) {
+				r->txstats.txfree_npu++;
+				continue;
+			}
 			txf_put(r, LIBRANPU_TXFREE_TOKEN, id, wcid, 0, 0);
 			r->txstats.txfree_host++;
 		}
@@ -342,13 +373,18 @@ int wlan_tx_task(struct task *t, int budget)
 	/* reports of frames already in the chip still reach the host */
 	n = txf_all(r, (u32)budget * 8);
 	if (st == WLAN_STOPPING) {
-		if (tx_drained(r))
+		lan_stop(r);
+		if (tx_drained(r)) {
+			r->audit.lan_tokens = lan_in_chip(r);
 			WRITE_ONCE(r->ack[WT_TX], st);
+		}
 		return n;
 	}
 
+	n += lan_drain(r, (u32)budget * TX_BATCH);
 	for (b = 0; b < WLAN_BANDS; b++)
 		if (r->tx[b].desc)
 			n += tx_band(r, b, (u32)budget * TX_BATCH);
+	tx_kick(r);
 	return n;
 }

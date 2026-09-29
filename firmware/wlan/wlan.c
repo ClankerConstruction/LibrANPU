@@ -268,6 +268,8 @@ static int wlan_attach(struct cmd_ctx *c)
 		err = place_link(r, a, 1, rsp);
 	if (!err)
 		err = ppe_attach(r);
+	if (!err)
+		err = lan_attach(r, a->tx_pool_base, a->npu_tokens);
 	for (i = 0; i < WLAN_BANDS && !err; i++)
 		if (!r->tx[i].desc != !r->htx[i].base ||
 		    (r->txfree[i].desc && !r->htxf.base))
@@ -320,6 +322,8 @@ static int wlan_start(struct cmd_ctx *c)
 			return -EIO;
 		REG32(r->tx[b].regs + 8) = r->tx_start[b];
 	}
+	if (r->tx_on)
+		lan_start(r);
 	/* tx free: the host's empty slot is at its cpu index */
 	for (b = 0; b < WLAN_BANDS && r->tx_on; b++) {
 		if (!r->txfree[b].desc)
@@ -390,6 +394,8 @@ static int wlan_detach(struct cmd_ctx *c)
 
 	memcpy(c->rsp, &r->audit, sizeof(r->audit));
 	c->rsp_len = sizeof(r->audit);
+	/* a start that failed had no stop: the frame engine goes quiet now */
+	lan_stop(r);
 	for (l = 0; l < 2; l++)
 		plat_pcie_window(l, 0, 0);
 	WRITE_ONCE(r->state, WLAN_DETACHED);
