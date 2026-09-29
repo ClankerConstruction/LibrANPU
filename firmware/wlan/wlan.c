@@ -468,6 +468,29 @@ static int wlan_aqm(struct cmd_ctx *c)
 	return 0;
 }
 
+/* a station's frames in the chip, read racing the tx task: a snapshot */
+static int wlan_sta_q(struct cmd_ctx *c)
+{
+	const struct libranpu_wlan_sta_q *q = (const void *)c->req;
+	struct libranpu_wlan_sta_q *o = (void *)c->rsp;
+	struct wlan_radio *r = &wlan_radio;
+	const struct aqm_sta *s;
+	u16 wcid = q->wcid;
+
+	if (q->radio || wcid >= AQM_STAS || !r->lan.sta ||
+	    r->state == WLAN_DETACHED)
+		return -EINVAL;
+	s = &r->lan.sta[wcid];
+	memset(o, 0, sizeof(*o));
+	o->wcid = wcid;
+	o->in_chip = (u16)(s->sent - s->done);
+	o->count = s->count;
+	o->dropping = aqm_dropping(s);
+	o->delay_us = s->delay / plat_cpu_mhz();
+	c->rsp_len = sizeof(*o);
+	return 0;
+}
+
 static const struct cmd_handler wlan_handlers[] = {
 	{ LIBRANPU_WLAN_ATTACH, offsetof(struct libranpu_wlan_attach, ring),
 	  wlan_attach },
@@ -479,6 +502,8 @@ static const struct cmd_handler wlan_handlers[] = {
 	{ LIBRANPU_WLAN_GET_STATS, sizeof(struct libranpu_wlan_ctl),
 	  wlan_get_stats },
 	{ LIBRANPU_WLAN_AQM, sizeof(struct libranpu_wlan_aqm), wlan_aqm },
+	{ LIBRANPU_WLAN_STA_Q, sizeof(struct libranpu_wlan_sta_q),
+	  wlan_sta_q },
 };
 
 const struct cmd_service wlan_service = {

@@ -276,6 +276,17 @@ enum libranpu_wlan_op {
 	LIBRANPU_WLAN_FORCE_HOST,
 	LIBRANPU_WLAN_GET_STATS,	/* ctl in, stats out */
 	LIBRANPU_WLAN_AQM,		/* aqm in (set: 1), aqm out */
+	LIBRANPU_WLAN_STA_Q,		/* sta_q in (wcid), sta_q out */
+};
+
+/* one station's LAN to WiFi frames in the chip, by wcid */
+struct libranpu_wlan_sta_q {
+	__u8 radio;
+	__u8 dropping;			/* out: CoDel drops under way */
+	__le16 wcid;
+	__le16 in_chip;			/* frames sent, not yet freed */
+	__le16 count;			/* drops in the current dropping state */
+	__le32 delay_us;		/* the last timed frame's time in the chip */
 };
 
 /*

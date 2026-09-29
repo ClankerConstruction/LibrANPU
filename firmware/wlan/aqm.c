@@ -108,6 +108,11 @@ enum aqm_verdict aqm_decide(const struct aqm_cfg *c, struct aqm_sta *s,
 	return AQM_DROP;
 }
 
+bool aqm_dropping(const struct aqm_sta *s)
+{
+	return s->flags & DROPPING;
+}
+
 void aqm_sent(struct aqm_sta *s, u16 tok, u32 now)
 {
 	s->sent++;

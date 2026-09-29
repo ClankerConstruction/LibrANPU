@@ -47,5 +47,6 @@ enum aqm_verdict aqm_decide(const struct aqm_cfg *c, struct aqm_sta *s,
 			    u32 len, u32 now);
 void aqm_sent(struct aqm_sta *s, u16 tok, u32 now);
 void aqm_done(struct aqm_sta *s, u16 tok, u32 now);
+bool aqm_dropping(const struct aqm_sta *s);
 
 #endif
