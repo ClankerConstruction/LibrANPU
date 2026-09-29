@@ -536,6 +536,29 @@ static void fe_lan(u32 k, u32 n)
 	}
 }
 
+/* LAN frames the chip took whose tokens the NPU has not had back */
+static u32 lan_out(void)
+{
+	struct libranpu_wlan_ctl w = { .page = 1 };
+	struct libranpu_wlan_tx_stats t;
+
+	if (cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w, sizeof(w),
+		&t, NULL))
+		return 0;
+	return chip.lan_taken - t.txfree_npu;
+}
+
+static u32 lan_drops(void)
+{
+	struct libranpu_wlan_ctl w = { .page = 1 };
+	struct libranpu_wlan_tx_stats t;
+
+	if (cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w, sizeof(w),
+		&t, NULL))
+		return 0;
+	return t.lan_limit_drops + t.lan_aqm_drops;
+}
+
 /* the chip's view of a LAN frame: zero TXD, TXP, frame at +128 */
 static bool chip_lan_ok(u32 b, volatile u32 *d)
 {
@@ -1047,6 +1070,22 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	      REG32(NPU_MMIO_BASE + 0x1300c));
 
 	CHECK(wlan_ctl(LIBRANPU_WLAN_START, NULL) == 0, "start");
+	/* per-station limit: defaults, and a hard limit of 16 when held */
+	{
+		struct libranpu_wlan_aqm q = { 0 }, o;
+
+		CHECK(cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_AQM, &q, sizeof(q),
+			  &o, NULL) == 0 && o.on && o.limit == 8192 &&
+		      o.delay_us == 10000 && o.interval_us == 100000 &&
+		      o.min_q == 64 && o.small == 256, "aqm defaults");
+		if (nheld) {
+			o.set = 1;
+			o.limit = 16;
+			CHECK(cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_AQM, &o,
+				  sizeof(o), &q, NULL) == 0 && q.limit == 16,
+			      "aqm set");
+		}
+	}
 	CHECK(REG32(regs_of(0) + 8) == RX_ENTRIES - 1, "rx0 cidx %u",
 	      REG32(regs_of(0) + 8));
 	CHECK(REG32(regs_of(3) + 8) == TX_DIDX0, "tx0 cidx %u",
@@ -1113,12 +1152,16 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	      chip.tx_taken != htx_seq[0] + htx_seq[1] ||
 	      htxf_tok[0] + htxf_tok[1] != chip.tx_taken ||
 	      htxf_stat[0] + htxf_stat[1] != chip.reports[0] + chip.reports[1] ||
-	      chip.lan_taken != lan_sent);) {
+	      chip.npend[0] || chip.npend[1] ||
+	      chip.lan_taken + lan_drops() != lan_sent);) {
 		chip_tx_step();
 		chip_txfree(0, true);
 		chip_txfree(1, true);
 		host_txfree_poll();
 	}
+	/* and the NPU takes the last reports */
+	for (t0 = cycles(); cycles() - t0 < TIMEOUT && lan_out(); )
+		host_txfree_poll();
 	CHECK(htxf_tok[0] == htx_seq[0] && htxf_tok[1] == htx_seq[1] &&
 	      htxf_stat[0] == chip.reports[0] &&
 	      htxf_stat[1] == chip.reports[1] && !htxf_bad &&
@@ -1129,9 +1172,15 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	CHECK(chip.tx_taken == htx_seq[0] + htx_seq[1] && !chip.tx_bad,
 	      "tx taken %u of %u, bad %u", chip.tx_taken,
 	      htx_seq[0] + htx_seq[1], chip.tx_bad);
-	CHECK(chip.lan_taken == lan_sent && !chip.lan_bad && lan_sent > frames,
-	      "lan frames %u of %u, bad %u", chip.lan_taken, lan_sent,
-	      chip.lan_bad);
+	w.page = 1;
+	cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w, sizeof(w), &wt,
+	    NULL);
+	w.page = 0;
+	CHECK(chip.lan_taken + wt.lan_limit_drops + wt.lan_aqm_drops == lan_sent &&
+	      !chip.lan_bad && lan_sent > frames &&
+	      (nheld ? wt.lan_limit_drops > 0 : !wt.lan_limit_drops),
+	      "lan frames %u + limit %u + aqm %u of %u, bad %u", chip.lan_taken,
+	      wt.lan_limit_drops, wt.lan_aqm_drops, lan_sent, chip.lan_bad);
 	w.page = 1;
 	CHECK(cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w, sizeof(w),
 		  &wt, NULL) == 0 && wt.descs[0] == htx_seq[0] &&
@@ -1140,8 +1189,9 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	      wt.txfree_events[0] + wt.txfree_events[1] ==
 	      chip.reports[0] + chip.reports[1] + chip.others &&
 	      wt.txfree_other == chip.others &&
-	      wt.lan_frames[0] + wt.lan_frames[1] == lan_sent &&
-	      wt.txfree_npu == lan_sent && wt.lan_no_token && !wt.lan_bad,
+	      wt.lan_frames[0] + wt.lan_frames[1] == chip.lan_taken &&
+	      wt.txfree_npu == chip.lan_taken && !wt.lan_bad &&
+	      (nheld ? wt.lan_limit_drops > 0 : wt.lan_no_token > 0),
 	      "tx stats %u %u full %u %u rewrite %u, tx free %u %u host %u bad %u full %u, lan %u %u npu %u no token %u ring full %u bad %u",
 	      wt.descs[0], wt.descs[1], wt.full[0], wt.full[1], wt.rewrite,
 	      wt.txfree_events[0], wt.txfree_events[1], wt.txfree_host,

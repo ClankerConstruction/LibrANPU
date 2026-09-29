@@ -7,6 +7,7 @@
 #define __WLAN_WLAN_H
 
 #include "core/pool.h"
+#include "wlan/aqm.h"
 #include "core/spsc.h"
 #include "core/task.h"
 #include "ctl/cmd.h"
@@ -98,6 +99,8 @@ struct wlan_lan {
 	u32 pool_bus;			/* host physical */
 	u32 tokens;			/* 0: no LAN to WiFi */
 	u32 start[WLAN_LAN_RINGS];	/* the frame engine's index at attach */
+	struct aqm_sta *sta;		/* by wcid, tx task */
+	u16 *tok_sta;			/* each token's station or AQM_NONE */
 };
 
 struct wlan_radio {
@@ -121,6 +124,7 @@ struct wlan_radio {
 	u32 txfree_start[WLAN_BANDS];	/* the host's empty slot at start */
 	struct wlan_host_ring htxf;	/* tx free records to the host */
 	struct wlan_lan lan;
+	struct aqm_cfg aqm;		/* control writes, tx task reads */
 	u32 tx_start[WLAN_BANDS];	/* chip dma index at start */
 	bool tx_on;
 	u32 mod_frames;

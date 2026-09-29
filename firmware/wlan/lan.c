@@ -77,6 +77,9 @@ int lan_attach(struct wlan_radio *r, u32 base, u32 tokens)
 		return -EINVAL;
 
 	stack = arena_alloc(&npu_sram, 2 * tokens, 4, OWNER_RADIO0);
+	l->tok_sta = arena_alloc(&npu_sram, 2 * tokens, 4, OWNER_RADIO0);
+	l->sta = arena_alloc(&npu_sram, AQM_STAS * sizeof(*l->sta), 4,
+			     OWNER_RADIO0);
 	for (k = 0; k < WLAN_LAN_RINGS; k++) {
 		l->desc[k] = (uintptr_t)arena_alloc(&npu_sram,
 						    LAN_DESC * WLAN_LAN_RING,
@@ -86,8 +89,13 @@ int lan_attach(struct wlan_radio *r, u32 base, u32 tokens)
 		if (!l->desc[k] || !l->slot_tok[k])
 			return -ENOSPC;
 	}
-	if (!stack)
+	if (!stack || !l->tok_sta || !l->sta)
 		return -ENOSPC;
+	for (i = 0; i < AQM_STAS; i++)
+		aqm_sta_init(&l->sta[i]);
+	for (t = 0; t < tokens; t++)
+		l->tok_sta[t] = AQM_NONE;
+	aqm_defaults(&r->aqm, plat_cpu_mhz());
 
 	l->pool = (uintptr_t)pool;
 	l->pool_bus = base;
@@ -151,9 +159,13 @@ void lan_stop(struct wlan_radio *r)
 bool lan_token_free(struct wlan_radio *r, u32 id)
 {
 	struct wlan_lan *l = &r->lan;
+	u16 w;
 
 	if (id >= l->tokens)
 		return false;
+	w = l->tok_sta[id];
+	if (w != AQM_NONE)
+		aqm_done(&l->sta[w], id, cycles());
 	pool_put(&l->free, id, 0, l->tokens - 1);
 	return true;
 }
@@ -172,17 +184,31 @@ u32 lan_in_chip(struct wlan_radio *r)
  * frame waits in its slot while the chip ring is full or no token is
  * free; the frame engine backs off.
  */
-static bool lan_frame(struct wlan_radio *r, u32 k, u32 i)
+static bool lan_frame(struct wlan_radio *r, u32 k, u32 i, u32 now)
 {
 	struct wlan_lan *l = &r->lan;
 	volatile u32 *d = (u32 *)(l->desc[k] + LAN_DESC * i);
 	u32 len = FIELD_GET(RXD_LEN, d[1]), w4 = d[4], w6 = d[6];
 	u32 b = FIELD_GET(RXD_BAND, w4), t = l->slot_tok[k][i], bus;
+	u32 wcid = FIELD_GET(RXD_WCID, w4);
+	struct aqm_sta *s = wcid < AQM_STAS ? &l->sta[wcid] : NULL;
+	enum aqm_verdict v = AQM_PASS;
 	volatile u32 *txp;
 	u16 next;
 
 	if (!len || len > LAN_BUF_LEN || !r->tx[b].desc) {
 		r->txstats.lan_bad++;
+		slot_arm(l, k, i, t);
+		return true;
+	}
+	if (s)
+		v = aqm_decide(&r->aqm, s, len, now);
+	if (v != AQM_PASS) {
+		if (v == AQM_LIMIT)
+			r->txstats.lan_limit_drops++;
+		else
+			r->txstats.lan_aqm_drops++;
+		/* the frame goes, its token stays under the slot */
 		slot_arm(l, k, i, t);
 		return true;
 	}
@@ -204,6 +230,9 @@ static bool lan_frame(struct wlan_radio *r, u32 k, u32 i)
 	txp[2] = bus + LAN_HDR;
 	txp[8] = len;
 	wlan_tx_put(r, b, bus, LAN_TX_CTRL, bus + LAN_HDR, 0);
+	l->tok_sta[t] = s ? wcid : AQM_NONE;
+	if (s)
+		aqm_sent(s, t, now);
 	r->txstats.lan_frames[k]++;
 	return true;
 }
@@ -211,7 +240,7 @@ static bool lan_frame(struct wlan_radio *r, u32 k, u32 i)
 u32 lan_drain(struct wlan_radio *r, u32 budget)
 {
 	struct wlan_lan *l = &r->lan;
-	u32 k, n, all = 0;
+	u32 k, n, all = 0, now = cycles();
 
 	for (k = 0; k < WLAN_LAN_RINGS && l->tokens; k++) {
 		u32 i = ridx[k];
@@ -219,7 +248,7 @@ u32 lan_drain(struct wlan_radio *r, u32 budget)
 		for (n = 0; n < budget; n++) {
 			volatile u32 *d = (u32 *)(l->desc[k] + LAN_DESC * i);
 
-			if (!(d[1] & RXD_DONE) || !lan_frame(r, k, i))
+			if (!(d[1] & RXD_DONE) || !lan_frame(r, k, i, now))
 				break;
 			i = i + 1 == WLAN_LAN_RING ? 0 : i + 1;
 		}

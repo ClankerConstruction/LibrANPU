@@ -433,6 +433,41 @@ static int wlan_get_stats(struct cmd_ctx *c)
 	return 0;
 }
 
+/* per-station limit: times go in and out in microseconds */
+static int wlan_aqm(struct cmd_ctx *c)
+{
+	const struct libranpu_wlan_aqm *q = (const void *)c->req;
+	struct libranpu_wlan_aqm *o = (void *)c->rsp;
+	struct aqm_cfg *a = &wlan_radio.aqm;
+	u32 mhz = plat_cpu_mhz();
+
+	if (q->radio)
+		return -EINVAL;
+	if (q->set) {
+		if (!q->interval_us || q->interval_us > 1000000 ||
+		    q->delay_us > 1000000)
+			return -EINVAL;
+		a->limit = q->limit;
+		a->target = q->target;
+		a->delay = q->delay_us * mhz;
+		a->interval = q->interval_us * mhz;
+		a->min_q = q->min_q;
+		a->small = q->small;
+		wmb();
+		a->on = q->on;
+	}
+	memset(o, 0, sizeof(*o));
+	o->on = a->on;
+	o->limit = a->limit;
+	o->target = a->target;
+	o->delay_us = a->delay / mhz;
+	o->interval_us = a->interval / mhz;
+	o->min_q = a->min_q;
+	o->small = a->small;
+	c->rsp_len = sizeof(*o);
+	return 0;
+}
+
 static const struct cmd_handler wlan_handlers[] = {
 	{ LIBRANPU_WLAN_ATTACH, offsetof(struct libranpu_wlan_attach, ring),
 	  wlan_attach },
@@ -443,6 +478,7 @@ static const struct cmd_handler wlan_handlers[] = {
 	  wlan_force_host },
 	{ LIBRANPU_WLAN_GET_STATS, sizeof(struct libranpu_wlan_ctl),
 	  wlan_get_stats },
+	{ LIBRANPU_WLAN_AQM, sizeof(struct libranpu_wlan_aqm), wlan_aqm },
 };
 
 const struct cmd_service wlan_service = {

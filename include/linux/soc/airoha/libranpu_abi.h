@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		4
+#define LIBRANPU_ABI_MINOR		5
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -275,6 +275,25 @@ enum libranpu_wlan_op {
 	LIBRANPU_WLAN_DETACH,
 	LIBRANPU_WLAN_FORCE_HOST,
 	LIBRANPU_WLAN_GET_STATS,	/* ctl in, stats out */
+	LIBRANPU_WLAN_AQM,		/* aqm in (set: 1), aqm out */
+};
+
+/*
+ * Per-station limit on LAN to WiFi frames in the chip: a hard limit and
+ * CoDel drops against a standing in-chip delay. Defaults: on, 8192,
+ * target 0, 10 ms, 100 ms, 64, 256.
+ */
+struct libranpu_wlan_aqm {
+	__u8 radio;
+	__u8 set;			/* 0: only read */
+	__u8 on;
+	__u8 rsv;
+	__le32 limit;			/* frames in the chip per station */
+	__le32 target;			/* frames above which it stands; 0 off */
+	__le32 delay_us;		/* in-chip time above which it stands */
+	__le32 interval_us;
+	__le32 min_q;			/* frames; a shorter queue never stands */
+	__le32 small;			/* bytes; never dropped early */
 };
 
 enum libranpu_wlan_backend {
@@ -411,6 +430,8 @@ struct libranpu_wlan_tx_stats {
 	__le32 lan_no_token;		/* passes out of tokens: waited */
 	__le32 lan_ring_full;		/* passes the chip ring was full: waited */
 	__le32 lan_bad;			/* bad band or length: dropped */
+	__le32 lan_aqm_drops;		/* dropped for a standing in-chip delay */
+	__le32 lan_limit_drops;		/* dropped at a station's hard limit */
 };
 
 #define LIBRANPU_RX_BUF_SIZE		2048
