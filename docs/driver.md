@@ -39,13 +39,44 @@ flowchart TD
 `libranpu_get/put` (from the `airoha,npu` phandle; refuses a node another driver owns),
 `libranpu_caps`, `libranpu_cmd`, notifier (`LIBRANPU_FATAL`).
 
-WLAN (`driver/wlan.c`): `libranpu_rx_pool` / `libranpu_rx_sync` (the `rx-pkt` pool, mapped once,
-synced per frame), `libranpu_wlan_attach/start/stop/detach/force_host/stats`, host adaptor rings
-(`ha_ring_init`, `ha_rx_prod/cons`, `ha_tx_prod/cons`) and lines (`ha_irq`, `ha_irq_enable`,
-`ha_irq_ack`: each line acks only its own ring).
+WLAN (`driver/wlan.c`): `libranpu_rx_pool` (the `rx-pkt` pool, mapped once),
+`libranpu_wlan_attach` (fills in the pool, rx buffer layout and held ids),
+`start/stop/detach/force_host/stats`, host adaptor rings (`ha_ring_init`, `ha_rx_prod/cons`,
+`ha_tx_prod/cons`) and lines (`ha_irq`, `ha_irq_enable`, `ha_irq_ack`: each line acks only its
+own ring).
 
-debugfs: `status`, `dbg_block`, `probe`, `cmd_bench`, `ha_probe`, `wlan_stats`, `wlan_force_host`
-(bench switch; devlink later).
+Rx buffers (`driver/rxbuf.c`): `libranpu_rx_skb` (a frame's buffers as one skb), `rx_drop`,
+`rx_reclaim` (ids for the return ring). One NAPI context calls them.
+
+debugfs: `status`, `dbg_block`, `probe`, `cmd_bench`, `ha_probe`, `wlan_stats` (NPU counters, then
+`host_lent_frames`, `host_copied_frames`, `host_reclaimed`, `host_lent_now N of MAX`),
+`wlan_force_host`, `wlan_rx_lend` (bench switches; devlink later).
+
+## Zero-copy rx
+
+```mermaid
+flowchart LR
+  RING["host rx ring<br/>id, offset, length"] --> SKB{"frame > 256 B<br/>and lent < max?"}
+  SKB -->|yes| LEND["napi_build_skb on the buffer,<br/>more buffers as page frags;<br/>page bias - 1"]
+  SKB -->|no| COPY["napi_alloc_skb + copy;<br/>id ready at once"]
+  LEND --> STACK["network stack"]
+  STACK -->|"put_page"| PAGE["pool page count"]
+  PAGE -->|"count == 1 + bias:<br/>clean for the device"| READY["reclaim"]
+  COPY --> READY
+  READY -->|"each NAPI poll"| RET["return ring to the NPU"]
+```
+
+| rule | why |
+|---|---|
+| chip writes at the buffer start, `SKB_WITH_OVERHEAD(2048)` = 1728 bytes | the stack's `skb_shared_info` fits after it; a full 802.3 frame and a 192-byte RXD fit in one buffer, as on the host rx path |
+| the driver holds `USHRT_MAX` references per pool page and gives one to each lent buffer | no atomic per frame; the page count equals `1 + bias` again once every user dropped it (the page-reuse idiom of rx page-flip drivers) |
+| reclaim checks at most 64 lent pages per poll; a busy page moves to the back | a socket that holds its buffers does not block the others |
+| a reclaimed buffer is cleaned for the device (1728 bytes) | the stack may have written headers; no dirty line may land on the chip's next frame |
+| lend limit `(pool - chip ring slots) / 2`, then copy | a socket that never reads cannot take the pool from the chip |
+| frames of 256 bytes or less are copied | cheaper than a lend and a later clean; small ACKs do not pin 2 KB |
+| pool pages keep the base reference of reserved memory | a count never reaches zero; an unload gives back only the bias |
+| attach passes the ids still lent (`rx_held` bitmap) | the NPU keeps them out of the chip's rings until they come back on the return ring |
+| a page with extra references at load is lent until they drop | a reload of the module while sockets hold buffers is safe |
 
 ## DT
 

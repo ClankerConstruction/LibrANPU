@@ -72,7 +72,9 @@ flowchart LR
 ```
 
 - Attach places the chip rings per PCIe link in NPU SRAM and opens that link's inbound window;
-  buffers are `pool + id * 2048`, frame data at `+192`, one fixed pool the host maps.
+  buffers are `pool + id * 2048`, one fixed pool the host maps. The host sets the headroom and the
+  chip's buffer length (`rx_headroom`, `rx_buf_len`); ids set in the `rx_held` bitmap stay out of
+  the pool, count as with the host, and join it when they come back on the return ring.
 - rx: a whole 802.3 frame without a chip flag goes to the PPE (two SRAM stores, the cpu index
   once per burst); repeated and old frames are dropped, PN failures reach the host as errors,
   every other indication reason is a good frame. A full TDMA ring stops the walk (no drop).

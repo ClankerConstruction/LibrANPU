@@ -41,3 +41,21 @@ WLAN (MT7990, two PCIe links, commit `0f055f3`):
 | WiFi to WAN through the PPE | 560-662 Mb/s at 11-14 % DUT CPU; host path 586-624 Mb/s at 49-52 % |
 | bound flow | 99.3 % of its frames forwarded by the PPE |
 | NPU cost | rx task ~450 cycles per frame at ~48 k frames/s (3 % of its hart) |
+
+Zero-copy rx (commit `3ca6361`, 5 GHz EHT160 2SS client, 3 interleaved runs of 10 s per cell,
+`wlan_rx_lend` switched at run time, force host on):
+
+| path | lend | Mb/s | DUT CPU | CPU % per Mb/s |
+|---|---|---|---|---|
+| bridged to a wired peer | on | 787 | 45.7 % | 0.058 |
+| bridged to a wired peer | off (copy) | 799 | 52.5 % | 0.066 |
+| to a DUT socket | on | 1307 | 77.1 % | 0.059 |
+| to a DUT socket | off (copy) | 1140 | 84.0 % | 0.074 |
+
+| check | result |
+|---|---|
+| integrity | 9.3 M lent frames bridged and local; the wired peer's TCP checksum errors unchanged |
+| chains | 1400-2000 B pings (two-buffer frames, head + page frag) to both 5 GHz clients |
+| stopped socket, 1345 lent | the WiFi driver and `libranpu` reloaded under it: 1830 ids held (915 pages); after the socket closed all came back, NPU `buf_returned` = host copied + reclaimed |
+| lend limit | a stopped socket holding 9 MB reaches 4608 of 4608; other clients keep their rate by copy, the chip never runs short (`buf_empty` 0) |
+| detach audit | no lost or expired ids |
