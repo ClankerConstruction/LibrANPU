@@ -465,6 +465,10 @@ static void test_reset(void)
 #define TX_ENTRIES	128
 #define TX_DIDX0	5		/* chip dma index before the start */
 #define TX_CTRL		0x004C4048	/* 76-byte TXWI, 72-byte head */
+#define TXF_ENTRIES	64		/* chip tx free rings */
+#define HTXF_BASE	0x89070000	/* tx free records to the host */
+#define HTXF_ENTRIES	256
+#define TXF_BATCH	24		/* tokens per chip report */
 #define HEADROOM	64
 #define BUF_LEN		1664
 #define RX_ENTRIES	256
@@ -478,6 +482,9 @@ struct chip {
 	u32 tx_desc[2];
 	u32 tx_didx[2];
 	u32 tx_taken, tx_bad;
+	u32 txf_desc[2], txf_idx[2];
+	u16 pend[2][TXF_BATCH];
+	u32 npend[2], reports[2];
 	u32 rx_desc[2];
 	u32 rxd_desc;
 	u32 rx_idx[2];
@@ -491,6 +498,8 @@ struct chip {
 static struct chip chip;
 static u32 hrx_cons, hret_prod, host_got, host_bad, chip_held;
 static u32 htx_prod[2], htx_seq[2];
+static u32 htxf_cons, htxf_tok[2], htxf_stat[2], htxf_bad;
+static bool htxf_hold;
 static volatile u32 *const held_map = (u32 *)HELD_BASE;
 
 static bool held(u32 id)
@@ -565,6 +574,58 @@ static u32 regs_of(int i)
 }
 
 /* chip tx: take slots up to the cpu index, check them, set done */
+/* a version 5 report: pair, header, then two tokens a word */
+static void chip_txfree(u32 b, bool full)
+{
+	volatile u32 *d = (u32 *)(chip.txf_desc[b] + 16 * chip.txf_idx[b]);
+	u32 n = chip.npend[b], len = 16 + 4 * ((n + 1) / 2), i;
+	volatile u32 *ev;
+
+	if (!n || (!full && n < TXF_BATCH / 2) || (d[1] & BIT(31)))
+		return;
+	ev = (u32 *)d[0];
+	ev[0] = 6u << 27 | n << 16 | len;
+	ev[1] = 5 << 16;
+	ev[2] = BIT(31) | (5 + b) << 12;
+	ev[3] = BIT(30) | 2 << 24 | b << 28;
+	for (i = 0; i < n; i += 2)
+		ev[4 + i / 2] = chip.pend[b][i] |
+				(i + 1 < n ? chip.pend[b][i + 1] : 0x7FFFu) << 15;
+	wmb();
+	d[1] = len << 16 | BIT(30) | BIT(31);
+	chip.txf_idx[b] = (chip.txf_idx[b] + 1) % TXF_ENTRIES;
+	chip.npend[b] = 0;
+	chip.reports[b]++;
+}
+
+/* the driver's tx free poll: tokens in order per band, a status each */
+static void host_txfree_poll(void)
+{
+	volatile u32 *ring = (u32 *)HTXF_BASE;
+	u32 prod = REG32(HA_RX(2) + 8);
+
+	if (htxf_hold)
+		return;
+	while (htxf_cons != prod) {
+		u32 w0 = ring[2 * htxf_cons], w1 = ring[2 * htxf_cons + 1];
+		u32 wcid = w0 >> 16, b = wcid - 5;
+
+		if (b > 1)
+			htxf_bad++;
+		else if ((w1 & 0xFF) == LIBRANPU_TXFREE_TOKEN) {
+			if ((w0 & 0xFFFF) != (htxf_tok[b] & 0x7FFF))
+				htxf_bad++;
+			htxf_tok[b]++;
+		} else if (w1 != (LIBRANPU_TXFREE_STATUS | 2 << 8 | b << 16)) {
+			htxf_bad++;
+		} else {
+			htxf_stat[b]++;
+		}
+		htxf_cons = (htxf_cons + 1) % HTXF_ENTRIES;
+	}
+	REG32(HA_RX(2) + 0xC) = htxf_cons;
+}
+
 static void chip_tx_step(void)
 {
 	u32 b;
@@ -575,11 +636,17 @@ static void chip_tx_step(void)
 		while (chip.tx_didx[b] != cidx) {
 			volatile u32 *d = (u32 *)(chip.tx_desc[b] +
 						  16 * chip.tx_didx[b]);
+
+			/* no report slot: the chip stops taking frames */
+			if (chip.npend[b] == TXF_BATCH)
+				break;
 			if ((d[1] & BIT(31)) || d[1] != TX_CTRL ||
 			    (d[0] >> 24) != 0x10 + b || d[2] != d[0] * 2 ||
 			    d[3] != (d[0] & 0xFFFFFF))
 				chip.tx_bad++;
 			d[1] |= BIT(31);
+			chip.pend[b][chip.npend[b]++] = d[0] & 0x7FFF;
+			chip_txfree(b, chip.npend[b] == TXF_BATCH);
 			chip.tx_taken++;
 			chip.tx_didx[b] = (chip.tx_didx[b] + 1) % TX_ENTRIES;
 			REG32(regs_of(3 + b) + 0xC) = chip.tx_didx[b];
@@ -757,6 +824,7 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	struct libranpu_wlan_attach_rsp rsp;
 	struct libranpu_wlan_audit au;
 	struct libranpu_wlan_stats ws;
+	struct libranpu_wlan_tx_stats wt;
 	struct libranpu_wlan_ctl w = { 0 };
 	u32 i, t0, seen = 0, want = 0, band = 0, bound0 = fe.bound, bound;
 	s32 st;
@@ -770,7 +838,8 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 		held_map[(3 + 7 * i) / 32] |= BIT((3 + 7 * i) % 32);
 	for (i = 0; i < 4; i++)
 		REG32(HA_RX(0) + 4 * i) = 0, REG32(HA_TX(4) + 4 * i) = 0,
-		REG32(HA_TX(5) + 4 * i) = 0, REG32(HA_TX(6) + 4 * i) = 0;
+		REG32(HA_TX(5) + 4 * i) = 0, REG32(HA_TX(6) + 4 * i) = 0,
+		REG32(HA_RX(2) + 4 * i) = 0;
 	for (i = 0; i < 20; i++)
 		REG32(CHIP_REGS + 4 * i) = 0;
 	htx_prod[0] = htx_prod[1] = htx_seq[0] = htx_seq[1] = 0;
@@ -780,7 +849,7 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 
 	a.backend = LIBRANPU_WLAN_RRO31;
 	a.bands = 2;
-	a.nrings = 9;
+	a.nrings = 12;
 	a.link_win[0] = 1;
 	a.link_win[1] = 0;
 	a.pool_base = POOL_BASE;
@@ -809,6 +878,12 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 		  HTX_BASE);
 	ring_desc(&a.ring[8], LIBRANPU_RING_HOST_TX, 1, 0, HTX_ENTRIES, 16, 6,
 		  HTX_BASE + 0x4000);
+	ring_desc(&a.ring[9], LIBRANPU_RING_TXFREE, 0, 0, TXF_ENTRIES, 16,
+		  regs_of(5), 0);
+	ring_desc(&a.ring[10], LIBRANPU_RING_TXFREE, 1, 0, TXF_ENTRIES, 16,
+		  regs_of(6), 0);
+	ring_desc(&a.ring[11], LIBRANPU_RING_HOST_TXFREE, 0, 0, HTXF_ENTRIES,
+		  8, 2, HTXF_BASE);
 
 	st = cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_ATTACH, &a, sizeof(a),
 		 &rsp, NULL);
@@ -824,6 +899,13 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	chip.rxd_desc = rsp.ring_base[2] | 0x80000000;
 	chip.tx_desc[0] = rsp.ring_base[5] | 0x80000000;
 	chip.tx_desc[1] = rsp.ring_base[6] | 0x80000000;
+	chip.txf_desc[0] = rsp.ring_base[9] | 0x80000000;
+	chip.txf_desc[1] = rsp.ring_base[10] | 0x80000000;
+	chip.txf_idx[0] = chip.txf_idx[1] = 0;
+	chip.npend[0] = chip.npend[1] = 0;
+	chip.reports[0] = chip.reports[1] = 0;
+	htxf_cons = htxf_tok[0] = htxf_tok[1] = 0;
+	htxf_stat[0] = htxf_stat[1] = htxf_bad = 0;
 	chip.tx_taken = chip.tx_bad = 0;
 	/* link 0 on window 1: its span covers rx band 0 and RXDMAD_C */
 	CHECK(REG32(NPU_MMIO_BASE + 0x13008) <= rsp.ring_base[0] &&
@@ -850,6 +932,9 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 		host_tx(i & 1, 1 + i % 5);
 		if (i % 3 == 0)
 			chip_tx_step();
+		/* the driver is late for a while: the NPU must wait, not drop */
+		htxf_hold = i > frames / 2 && i < frames / 2 + 200;
+		host_txfree_poll();
 		if (chip_rxd_used() + segs < RXD_ENTRIES - 8) {
 			for (s = 0; s < segs; s++)
 				while (chip_rx(band, 60 + (i % 1400), s == segs - 1,
@@ -884,20 +969,37 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	      "stats frames %u stale %u gap %u segs %u bound %u", ws.rx_frames,
 	      ws.rx_stale, ws.rx_ind[6], ws.host_segs, ws.ppe_bound);
 
-	/* the chip takes what is left of the host's tx */
+	/* the chip takes what is left of the host's tx and reports it */
 	for (t0 = cycles(); cycles() - t0 < TIMEOUT &&
 	     (REG32(HA_TX(5) + 0xC) != htx_prod[0] ||
 	      REG32(HA_TX(6) + 0xC) != htx_prod[1] ||
-	      chip.tx_taken != htx_seq[0] + htx_seq[1]);)
+	      chip.tx_taken != htx_seq[0] + htx_seq[1] ||
+	      htxf_tok[0] + htxf_tok[1] != chip.tx_taken);) {
 		chip_tx_step();
+		chip_txfree(0, true);
+		chip_txfree(1, true);
+		host_txfree_poll();
+	}
+	CHECK(htxf_tok[0] == htx_seq[0] && htxf_tok[1] == htx_seq[1] &&
+	      htxf_stat[0] == chip.reports[0] &&
+	      htxf_stat[1] == chip.reports[1] && !htxf_bad,
+	      "tx free tokens %u %u of %u %u, status %u %u of %u %u, bad %u",
+	      htxf_tok[0], htxf_tok[1], htx_seq[0], htx_seq[1], htxf_stat[0],
+	      htxf_stat[1], chip.reports[0], chip.reports[1], htxf_bad);
 	CHECK(chip.tx_taken == htx_seq[0] + htx_seq[1] && !chip.tx_bad,
 	      "tx taken %u of %u, bad %u", chip.tx_taken,
 	      htx_seq[0] + htx_seq[1], chip.tx_bad);
+	w.page = 1;
 	CHECK(cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w, sizeof(w),
-		  &ws, NULL) == 0 && ws.tx_descs[0] == htx_seq[0] &&
-	      ws.tx_descs[1] == htx_seq[1],
-	      "tx stats %u %u full %u %u rewrite %u", ws.tx_descs[0],
-	      ws.tx_descs[1], ws.tx_full[0], ws.tx_full[1], ws.tx_rewrite);
+		  &wt, NULL) == 0 && wt.descs[0] == htx_seq[0] &&
+	      wt.descs[1] == htx_seq[1] && !wt.txfree_bad &&
+	      wt.txfree_host == htx_seq[0] + htx_seq[1] &&
+	      wt.txfree_events[0] == chip.reports[0] && wt.txfree_full,
+	      "tx stats %u %u full %u %u rewrite %u, tx free %u %u host %u bad %u full %u",
+	      wt.descs[0], wt.descs[1], wt.full[0], wt.full[1], wt.rewrite,
+	      wt.txfree_events[0], wt.txfree_events[1], wt.txfree_host,
+	      wt.txfree_bad, wt.txfree_full);
+	w.page = 0;
 
 	/* let the buffer task take the last returns, then stop */
 	for (t0 = cycles(); cycles() - t0 < 20000000;)
