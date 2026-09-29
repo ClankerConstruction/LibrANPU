@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		1
+#define LIBRANPU_ABI_MINOR		2
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -301,7 +301,8 @@ enum libranpu_ring_kind {
 /*
  * Chip rings: regs is the bus address of the ring's register block,
  * base is 0 (the NPU places them in its SRAM). Host rings: regs is the
- * host adaptor ring number, base the host memory.
+ * host adaptor ring number, base the host memory. A host tx ring holds
+ * chip tx descriptors (16 bytes) the NPU copies into its band's ring.
  */
 struct libranpu_wlan_ring {
 	__u8 kind;			/* enum libranpu_ring_kind */
@@ -359,6 +360,8 @@ struct libranpu_wlan_audit {
 	__le32 lost;			/* none of the above */
 	__le32 expired;			/* bounded waits that ran out */
 	__le32 fe;			/* sent to the frame engine, not back */
+	__le32 tx_chip;			/* tx descriptors the chip had not taken */
+	__le32 tx_host;			/* host tx entries the NPU had not taken */
 };
 
 /* since attach; each field is counted by one NPU task */
@@ -380,6 +383,9 @@ struct libranpu_wlan_stats {
 	__le32 ppe_bound;		/* forwarded, id back */
 	__le32 ppe_unbound;		/* back to the host with FOE, CRSN */
 	__le32 ppe_bad_id;
+	__le32 tx_descs[2];		/* per band: host descriptors to the chip */
+	__le32 tx_full[2];		/* per band: passes the chip ring was full */
+	__le32 tx_rewrite;		/* descriptor writes the chip overwrote */
 	__le16 ppe_crsn[32];		/* unbound returns per CPU reason, wrap */
 };
 

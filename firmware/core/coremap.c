@@ -22,9 +22,11 @@ int coremap_build(void)
 		return err;
 
 #ifdef CONFIG_WLAN
-	/* rro31 two-band: rx, host and buffer each own a hart */
+	/* rro31 two-band: rx, tx, host and buffer each own a hart */
 	if (!err)
 		err = task_add(1, LIBRANPU_TASK_RX, wlan_rx_task, &wlan_radio, 4);
+	if (!err)
+		err = task_add(2, LIBRANPU_TASK_TX, wlan_tx_task, &wlan_radio, 4);
 	if (!err)
 		err = task_add(3, LIBRANPU_TASK_HOST, wlan_host_task,
 			       &wlan_radio, 4);

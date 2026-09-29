@@ -38,6 +38,7 @@ static int check_ring(const struct libranpu_wlan_attach *a,
 	switch (d->kind) {
 	case LIBRANPU_RING_RX_DATA:
 	case LIBRANPU_RING_RXDMAD_C:
+	case LIBRANPU_RING_TX_DATA:
 		if (d->entry_size != 16 || d->entries < 64 ||
 		    d->entries > WLAN_RING_MAX || d->link > 1 || !d->regs ||
 		    d->band >= a->bands)
@@ -52,6 +53,12 @@ static int check_ring(const struct libranpu_wlan_attach *a,
 	case LIBRANPU_RING_HOST_RET:
 		if (d->entry_size != 4 || d->regs >= HOST_RINGS ||
 		    d->entries < 64 || d->entries > 2 * a->pool_ids)
+			return -EINVAL;
+		return 0;
+	case LIBRANPU_RING_HOST_TX:
+		if (d->entry_size != 16 || d->regs >= HOST_RINGS ||
+		    d->band >= a->bands || d->entries < 64 ||
+		    d->entries > WLAN_RING_MAX)
 			return -EINVAL;
 		return 0;
 	case LIBRANPU_RING_NONE:
@@ -82,7 +89,8 @@ static int place_link(struct wlan_radio *r,
 		const struct libranpu_wlan_ring *d = &a->ring[i];
 
 		if ((d->kind == LIBRANPU_RING_RX_DATA ||
-		     d->kind == LIBRANPU_RING_RXDMAD_C) && d->link == link)
+		     d->kind == LIBRANPU_RING_RXDMAD_C ||
+		     d->kind == LIBRANPU_RING_TX_DATA) && d->link == link)
 			total += chip_bytes(d);
 	}
 	if (!total)
@@ -102,6 +110,8 @@ static int place_link(struct wlan_radio *r,
 			w = &r->rx[d->band];
 		else if (d->kind == LIBRANPU_RING_RXDMAD_C)
 			w = &r->rxdmad;
+		else if (d->kind == LIBRANPU_RING_TX_DATA)
+			w = &r->tx[d->band];
 		else
 			continue;
 
@@ -137,6 +147,10 @@ static void fill_rings(struct wlan_radio *r)
 	}
 	for (i = 0; i < r->rxdmad.entries; i++)
 		REG32(r->rxdmad.desc + 16 * i + 12) = WLAN_GEN_STALE;
+	/* tx: every slot starts as the chip's, done */
+	for (b = 0; b < r->nbands; b++)
+		for (i = 0; i < r->tx[b].entries; i++)
+			REG32(r->tx[b].desc + 16 * i + 4) = WLAN_TX_DESC_DONE;
 }
 
 static int wlan_attach(struct cmd_ctx *c)
@@ -182,6 +196,8 @@ static int wlan_attach(struct cmd_ctx *c)
 			host_ring(&r->hrx[d->band], d, HOST_RX_REGS(d->regs));
 		if (d->kind == LIBRANPU_RING_HOST_RET)
 			host_ring(&r->hret, d, HOST_TX_REGS(d->regs));
+		if (d->kind == LIBRANPU_RING_HOST_TX)
+			host_ring(&r->htx[d->band], d, HOST_TX_REGS(d->regs));
 	}
 	if (need >= a->pool_ids || !r->hrx[0].base || !r->hret.base)
 		return -EINVAL;
@@ -219,6 +235,9 @@ static int wlan_attach(struct cmd_ctx *c)
 		err = place_link(r, a, 1, rsp);
 	if (!err)
 		err = ppe_attach(r);
+	for (i = 0; i < WLAN_BANDS && !err; i++)
+		if (!r->tx[i].desc != !r->htx[i].base)
+			err = -EINVAL;
 	if (err || !r->rx[0].desc || !r->rxdmad.desc ||
 	    (r->nbands > 1 && !r->rx[1].desc)) {
 		arena_free_owner(&npu_sram, OWNER_RADIO0);
@@ -247,15 +266,23 @@ static int wlan_start(struct cmd_ctx *c)
 
 	if (w->radio || !(w->dir & LIBRANPU_WLAN_RX))
 		return -EINVAL;
-	if (w->dir & LIBRANPU_WLAN_TX)
-		return -EOPNOTSUPP;
 	if (r->state != WLAN_ATTACHED)
 		return -EBUSY;
+	if ((w->dir & LIBRANPU_WLAN_TX) && !r->tx[0].desc)
+		return -EOPNOTSUPP;
 
 	/* the host programmed the rings' bases: hand the chip its slots */
 	for (b = 0; b < r->nbands; b++)
 		REG32(r->rx[b].regs + 8) = r->rx[b].entries - 1;
 	REG32(r->rxdmad.regs + 8) = r->rxdmad.entries - 1;
+	/* tx starts where the chip is: one bus read per ring, here only */
+	r->tx_on = w->dir & LIBRANPU_WLAN_TX;
+	for (b = 0; b < WLAN_BANDS && r->tx_on; b++) {
+		if (!r->tx[b].desc)
+			continue;
+		r->tx_start[b] = REG32(r->tx[b].regs + 0xC) % r->tx[b].entries;
+		REG32(r->tx[b].regs + 8) = r->tx_start[b];
+	}
 	wmb();
 	WRITE_ONCE(r->state, WLAN_RUNNING);
 	return 0;
@@ -287,7 +314,8 @@ static int wlan_stop(struct cmd_ctx *c)
 void wlan_ctl_poll(void)
 {
 	struct wlan_radio *r = &wlan_radio;
-	bool done = READ_ONCE(r->ack[WT_BUF]) == WLAN_STOPPING;
+	bool done = READ_ONCE(r->ack[WT_BUF]) == WLAN_STOPPING &&
+		    (!r->tx_on || READ_ONCE(r->ack[WT_TX]) == WLAN_STOPPING);
 
 	if (!wctl.stopping)
 		return;

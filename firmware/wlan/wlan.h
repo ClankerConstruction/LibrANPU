@@ -23,6 +23,8 @@
 #define WLAN_RX_DESC_LEN	GENMASK(29, 16)
 #define WLAN_RX_DESC_TO_HOST	BIT(8)
 #define WLAN_RX_DESC_DONE	BIT(31)
+/* chip tx descriptor word 1: set by the chip once it took the slot */
+#define WLAN_TX_DESC_DONE	BIT(31)
 /* a completion generation the NPU does not expect first */
 #define WLAN_GEN_STALE		0xF0000000
 
@@ -39,6 +41,7 @@ enum wlan_task {
 	WT_RX,
 	WT_BUF,
 	WT_HOST,
+	WT_TX,
 	WT_MAX,
 };
 
@@ -94,6 +97,10 @@ struct wlan_radio {
 	struct wlan_ring rxdmad;
 	struct wlan_host_ring hrx[WLAN_BANDS];
 	struct wlan_host_ring hret;
+	struct wlan_ring tx[WLAN_BANDS];	/* chip tx rings, tx task */
+	struct wlan_host_ring htx[WLAN_BANDS];	/* host descriptors */
+	u32 tx_start[WLAN_BANDS];	/* chip dma index at start */
+	bool tx_on;
 	u32 mod_frames;
 	u32 mod_cycles;
 
@@ -115,6 +122,7 @@ extern struct wlan_radio wlan_radio;
 int wlan_rx_task(struct task *t, int budget);
 int wlan_buf_task(struct task *t, int budget);
 int wlan_host_task(struct task *t, int budget);
+int wlan_tx_task(struct task *t, int budget);
 
 /* task side: the state, and after it everything control set up for it */
 static inline u32 wlan_state(struct wlan_radio *r)
