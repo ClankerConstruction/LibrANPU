@@ -57,3 +57,23 @@ TEST(rejects_bad_returns)
 	pool_put(&p, id, 10, 13);
 	CHECK_EQ(p.top, 4);
 }
+
+TEST(init_except_held)
+{
+	u32 held[2] = { BIT(0) | BIT(31), BIT(3) };
+	struct id_pool p;
+	u16 ids[64];
+	u32 i, n;
+
+	CHECK_EQ(pool_init_except(&p, stack, 40, held), 3);
+	n = pool_get(&p, ids, 64);
+	CHECK_EQ(n, 37);
+	CHECK_EQ(ids[0], 1);
+	for (i = 0; i < n; i++)
+		CHECK(ids[i] != 0 && ids[i] != 31 && ids[i] != 35);
+	/* held ids come back later: room for all of them */
+	pool_put(&p, 31, 0, 39);
+	CHECK_EQ(p.bad, 0);
+	CHECK_EQ(pool_init_except(&p, stack, 40, NULL), 0);
+	CHECK_EQ(p.top, 40);
+}

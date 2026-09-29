@@ -132,10 +132,7 @@ static void fill_rings(struct wlan_radio *r)
 			volatile u32 *d = (u32 *)(w->desc + 16 * i);
 
 			pool_get(&r->pool, &id, 1);
-			d[0] = wlan_pool_bus(r, id) + LIBRANPU_RX_HEADROOM;
-			d[2] = (u32)id << 16;
-			d[3] = 0;
-			d[1] = WLAN_RX_DESC_CTRL;
+			wlan_rx_slot(r, d, id);
 		}
 	}
 	for (i = 0; i < r->rxdmad.entries; i++)
@@ -147,6 +144,7 @@ static int wlan_attach(struct cmd_ctx *c)
 	const struct libranpu_wlan_attach *a = (const void *)c->req;
 	struct libranpu_wlan_attach_rsp *rsp = (void *)c->rsp;
 	struct wlan_radio *r = &wlan_radio;
+	const volatile u32 *held = NULL;
 	u32 i, need = 0;
 	u16 *stack;
 	int err;
@@ -158,8 +156,15 @@ static int wlan_attach(struct cmd_ctx *c)
 	    a->link_win[0] > 1 || a->link_win[1] > 1 ||
 	    !a->pool_ids || a->pool_ids > WLAN_POOL_MAX ||
 	    a->pool_base & (LIBRANPU_RX_BUF_SIZE - 1) ||
-	    !plat_host_ptr(a->pool_base, a->pool_ids * LIBRANPU_RX_BUF_SIZE))
+	    !plat_host_ptr(a->pool_base, a->pool_ids * LIBRANPU_RX_BUF_SIZE) ||
+	    a->rx_headroom & 3 || a->rx_buf_len < 256 ||
+	    a->rx_headroom + a->rx_buf_len > LIBRANPU_RX_BUF_SIZE)
 		return -EINVAL;
+	if (a->rx_held) {
+		held = plat_host_ptr(a->rx_held, ALIGN_UP(a->pool_ids, 32) / 8);
+		if (!held)
+			return -EINVAL;
+	}
 
 	memset(rsp, 0, sizeof(*rsp));
 	i = r->epoch;
@@ -178,7 +183,6 @@ static int wlan_attach(struct cmd_ctx *c)
 		if (d->kind == LIBRANPU_RING_HOST_RET)
 			host_ring(&r->hret, d, HOST_TX_REGS(d->regs));
 	}
-	/* the pool must outlast the chip's rings */
 	if (need >= a->pool_ids || !r->hrx[0].base || !r->hret.base)
 		return -EINVAL;
 
@@ -186,6 +190,9 @@ static int wlan_attach(struct cmd_ctx *c)
 	r->flags = a->flags;
 	r->pool_base = a->pool_base;
 	r->pool_ids = a->pool_ids;
+	r->headroom = a->rx_headroom;
+	r->rx_ctrl = FIELD_PREP(WLAN_RX_DESC_LEN, a->rx_buf_len) |
+		     WLAN_RX_DESC_TO_HOST;
 	r->mod_frames = a->rx_mod_frames ?: MOD_FRAMES;
 	r->mod_cycles = (a->rx_mod_us ?: MOD_US) * plat_cpu_mhz();
 
@@ -200,6 +207,12 @@ static int wlan_attach(struct cmd_ctx *c)
 				  OWNER_RADIO0);
 	err = stack && r->rx2host && r->rx2buf && r->host2buf && r->ppe2host ?
 	      0 : -ENOSPC;
+	if (!err) {
+		r->held = pool_init_except(&r->pool, stack, a->pool_ids, held);
+		/* the pool must outlast the chip's rings */
+		if (need >= r->pool.top)
+			err = -ENOSPC;
+	}
 	if (!err)
 		err = place_link(r, a, 0, rsp);
 	if (!err)
@@ -217,7 +230,6 @@ static int wlan_attach(struct cmd_ctx *c)
 	spsc_init(r->rx2buf, WLAN_RETQ, 4);
 	spsc_init(r->host2buf, WLAN_RETQ, 4);
 	spsc_init(r->ppe2host, WLAN_RX2HOST, 8);
-	pool_init(&r->pool, stack, 0, a->pool_ids);
 	fill_rings(r);
 
 	r->epoch++;
@@ -338,7 +350,8 @@ static int wlan_get_stats(struct cmd_ctx *c)
 }
 
 static const struct cmd_handler wlan_handlers[] = {
-	{ LIBRANPU_WLAN_ATTACH, 24, wlan_attach },
+	{ LIBRANPU_WLAN_ATTACH, offsetof(struct libranpu_wlan_attach, ring),
+	  wlan_attach },
 	{ LIBRANPU_WLAN_START, sizeof(struct libranpu_wlan_ctl), wlan_start },
 	{ LIBRANPU_WLAN_STOP, sizeof(struct libranpu_wlan_ctl), wlan_stop },
 	{ LIBRANPU_WLAN_DETACH, sizeof(struct libranpu_wlan_ctl), wlan_detach },

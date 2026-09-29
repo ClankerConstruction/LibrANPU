@@ -38,8 +38,9 @@ static void host_reset(struct wlan_radio *r)
 	hs.hidx = 0;
 	hs.pending = 0;
 	hs.nseg = 0;
-	hs.delivered = 0;
-	WRITE_ONCE(r->delivered, 0);
+	/* held ids come back through the return ring like delivered ones */
+	hs.delivered = r->held;
+	WRITE_ONCE(r->delivered, r->held);
 	REG32(r->hrx[0].regs + HRX_PROD) = 0;
 }
 
@@ -72,7 +73,7 @@ static bool host_deliver(struct wlan_radio *r)
 			  (m->info & ~WRX_LAST);
 		e->data = 0;
 		e->buf = FIELD_PREP(LIBRANPU_HRX_ID, m->id) |
-			 FIELD_PREP(LIBRANPU_HRX_OFFSET, LIBRANPU_RX_HEADROOM);
+			 FIELD_PREP(LIBRANPU_HRX_OFFSET, r->headroom);
 	}
 	wmb();
 	for (i = n; i-- > 0;) {

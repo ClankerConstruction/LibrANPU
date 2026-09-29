@@ -19,8 +19,9 @@
 #define WLAN_RX2HOST		1024	/* rx task to host task entries */
 #define WLAN_RETQ		512	/* id returns between tasks */
 
-/* rx slot handed to the chip: 1792-byte buffer */
-#define WLAN_RX_DESC_CTRL	0x07000100
+/* rx slot handed to the chip: buffer length, to host */
+#define WLAN_RX_DESC_LEN	GENMASK(29, 16)
+#define WLAN_RX_DESC_TO_HOST	BIT(8)
 #define WLAN_RX_DESC_DONE	BIT(31)
 /* a completion generation the NPU does not expect first */
 #define WLAN_GEN_STALE		0xF0000000
@@ -85,6 +86,9 @@ struct wlan_radio {
 	u32 flags;
 	u32 pool_base;			/* host physical */
 	u32 pool_ids;
+	u32 headroom;			/* chip writes at buffer + headroom */
+	u32 rx_ctrl;			/* rx descriptor word 1 */
+	u32 held;			/* ids the host held at attach */
 	u32 nbands;
 	struct wlan_ring rx[WLAN_BANDS];
 	struct wlan_ring rxdmad;
@@ -130,6 +134,16 @@ static inline u32 wlan_bus(u32 npu_addr)
 static inline u32 wlan_pool_bus(const struct wlan_radio *r, u32 id)
 {
 	return r->pool_base + id * LIBRANPU_RX_BUF_SIZE;
+}
+
+/* a free rx slot under chip descriptor d */
+static inline void wlan_rx_slot(const struct wlan_radio *r,
+				volatile u32 *d, u16 id)
+{
+	d[0] = wlan_pool_bus(r, id) + r->headroom;
+	d[2] = (u32)id << 16;
+	d[3] = 0;
+	d[1] = r->rx_ctrl;
 }
 
 extern const struct cmd_service wlan_service;

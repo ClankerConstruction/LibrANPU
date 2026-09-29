@@ -70,7 +70,7 @@ static bool rx_ppe(struct wlan_radio *r, u32 id, u32 w1)
 		r->stats.ppe_full++;
 		return false;
 	}
-	ppe_submit(r, &r->ppe, id, LIBRANPU_RX_HEADROOM + hdr, len - hdr,
+	ppe_submit(r, &r->ppe, id, r->headroom + hdr, len - hdr,
 		   len);
 	r->stats.ppe_tx++;
 	return true;

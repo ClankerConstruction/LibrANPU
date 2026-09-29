@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		0
+#define LIBRANPU_ABI_MINOR		1
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -323,11 +323,15 @@ struct libranpu_wlan_attach {
 	__u8 nrings;
 	__le32 flags;			/* LIBRANPU_WLAN_F_* */
 	__u8 link_win[2];		/* inbound window of each PCIe link */
-	__le16 rsv;
+	__le16 rx_headroom;		/* the chip writes at buffer + this */
 	__le32 pool_base;		/* rx buffers: base + id * 2048 */
 	__le32 pool_ids;
 	__le16 rx_mod_frames;		/* host rx line after this many */
 	__le16 rx_mod_us;		/* or this long after the first */
+	__le16 rx_buf_len;		/* bytes the chip may write */
+	__le16 rsv;
+	/* bitmap of ids the host still holds from a previous attach, or 0 */
+	__le32 rx_held;
 	struct libranpu_wlan_ring ring[LIBRANPU_WLAN_RINGS];
 };
 
@@ -380,7 +384,6 @@ struct libranpu_wlan_stats {
 };
 
 #define LIBRANPU_RX_BUF_SIZE		2048
-#define LIBRANPU_RX_HEADROOM		192
 
 /*
  * Host rx ring entry, 24 bytes. The NPU writes words 1-3, then word 0.

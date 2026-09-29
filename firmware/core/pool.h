@@ -31,6 +31,29 @@ static inline void pool_init(struct id_pool *p, u16 *stack, u32 first,
 	p->bad = 0;
 }
 
+/*
+ * ids 0..count-1 but those set in held, a bitmap of 32-bit words read
+ * once each; returns how many were left out.
+ */
+static inline u32 pool_init_except(struct id_pool *p, u16 *stack, u32 count,
+				   const volatile u32 *held)
+{
+	u32 i, bits = 0;
+
+	p->stack = stack;
+	p->size = count;
+	p->top = 0;
+	for (i = count; i-- > 0;) {
+		if (held && (i % 32 == 31 || i == count - 1))
+			bits = held[i / 32];
+		if (!(bits & BIT(i % 32)))
+			stack[p->top++] = i;
+	}
+	p->low = p->top;
+	p->bad = 0;
+	return count - p->top;
+}
+
 /* up to n ids into ids[]; returns how many */
 static inline u32 pool_get(struct id_pool *p, u16 *ids, u32 n)
 {

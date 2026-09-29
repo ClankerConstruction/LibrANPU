@@ -97,10 +97,7 @@ static u32 refill(struct wlan_radio *r, u32 b, u32 budget)
 			r->stats.buf_empty++;
 			break;
 		}
-		d[0] = wlan_pool_bus(r, id) + LIBRANPU_RX_HEADROOM;
-		d[2] = (u32)id << 16;
-		d[3] = 0;
-		d[1] = WLAN_RX_DESC_CTRL;
+		wlan_rx_slot(r, d, id);
 		idx = idx + 1 == w->entries ? 0 : idx + 1;
 		n++;
 	}
