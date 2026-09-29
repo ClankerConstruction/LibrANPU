@@ -489,6 +489,7 @@ struct chip {
 	u32 txf_desc[2], txf_idx[2];
 	u16 pend[2][TXF_BATCH];
 	u32 npend[2], reports[2];
+	u32 other_sent[2], others;
 	u32 rx_desc[2];
 	u32 rxd_desc;
 	u32 rx_idx[2];
@@ -502,7 +503,7 @@ struct chip {
 static struct chip chip;
 static u32 hrx_cons, hret_prod, host_got, host_bad, chip_held;
 static u32 htx_prod[2], htx_seq[2];
-static u32 htxf_cons, htxf_tok[2], htxf_stat[2], htxf_bad;
+static u32 htxf_cons, htxf_tok[2], htxf_stat[2], htxf_bad, htxf_other;
 static bool htxf_hold;
 static volatile u32 *const held_map = (u32 *)HELD_BASE;
 
@@ -587,6 +588,20 @@ static void chip_txfree(u32 b, bool full)
 
 	if (!n || (!full && n < TXF_BATCH / 2) || (d[1] & BIT(31)))
 		return;
+	if (chip.reports[b] % 4 == 3 && !chip.other_sent[b]) {
+		ev = (u32 *)d[0];
+		for (i = 0; i < 11; i++)
+			ev[i] = i ? 0xA0000000 | b << 16 | chip.reports[b] << 4 | i :
+				3u << 27 | 44;
+		wmb();
+		d[1] = 44 << 16 | BIT(30) | BIT(31);
+		chip.txf_idx[b] = (chip.txf_idx[b] + 1) % TXF_ENTRIES;
+		REG32(regs_of(5 + b) + 0xC) = chip.txf_idx[b];
+		chip.other_sent[b] = 1;
+		chip.others++;
+		return;
+	}
+	chip.other_sent[b] = 0;
 	ev = (u32 *)d[0];
 	if ((d[1] >> 16 & 0x3FFF) != TXF_BUF64 * 64)
 		chip.tx_bad++;
@@ -617,6 +632,23 @@ static void host_txfree_poll(void)
 		u32 w0 = ring[2 * htxf_cons], w1 = ring[2 * htxf_cons + 1];
 		u32 wcid = w0 >> 16, b = wcid - 5;
 
+		if ((w1 & 0xFF) == LIBRANPU_TXFREE_EVENT) {
+			u32 len = w0 & 0xFFFF, n = (len + 7) / 8, i, v;
+
+			/* the report's own words follow, in order */
+			for (i = 0; i < 2 * n && i < len / 4; i++) {
+				v = ring[2 * ((htxf_cons + 1 + i / 2) % HTXF_ENTRIES) +
+					 i % 2];
+				if (i ? (v & 0xFFFF000F) != (0xA0000000 | wcid << 16 | i) :
+				    v != (3u << 27 | 44))
+					htxf_bad++;
+			}
+			if (len != 44 || wcid > 1)
+				htxf_bad++;
+			htxf_other++;
+			htxf_cons = (htxf_cons + 1 + n) % HTXF_ENTRIES;
+			continue;
+		}
 		if (b > 1)
 			htxf_bad++;
 		else if ((w1 & 0xFF) == LIBRANPU_TXFREE_TOKEN) {
@@ -926,7 +958,8 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	chip.npend[0] = chip.npend[1] = 0;
 	chip.reports[0] = chip.reports[1] = 0;
 	htxf_cons = htxf_tok[0] = htxf_tok[1] = 0;
-	htxf_stat[0] = htxf_stat[1] = htxf_bad = 0;
+	htxf_stat[0] = htxf_stat[1] = htxf_bad = htxf_other = 0;
+	chip.other_sent[0] = chip.other_sent[1] = chip.others = 0;
 	chip.tx_taken = chip.tx_bad = 0;
 	/* link 0 on window 1: its span covers rx band 0 and RXDMAD_C */
 	CHECK(REG32(NPU_MMIO_BASE + 0x13008) <= rsp.ring_base[0] &&
@@ -1003,7 +1036,8 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	}
 	CHECK(htxf_tok[0] == htx_seq[0] && htxf_tok[1] == htx_seq[1] &&
 	      htxf_stat[0] == chip.reports[0] &&
-	      htxf_stat[1] == chip.reports[1] && !htxf_bad,
+	      htxf_stat[1] == chip.reports[1] && !htxf_bad &&
+	      htxf_other == chip.others && chip.others,
 	      "tx free tokens %u %u of %u %u, status %u %u of %u %u, bad %u",
 	      htxf_tok[0], htxf_tok[1], htx_seq[0], htx_seq[1], htxf_stat[0],
 	      htxf_stat[1], chip.reports[0], chip.reports[1], htxf_bad);
@@ -1015,7 +1049,9 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 		  &wt, NULL) == 0 && wt.descs[0] == htx_seq[0] &&
 	      wt.descs[1] == htx_seq[1] && !wt.txfree_bad &&
 	      wt.txfree_host == htx_seq[0] + htx_seq[1] &&
-	      wt.txfree_events[0] == chip.reports[0] && wt.txfree_full,
+	      wt.txfree_events[0] + wt.txfree_events[1] ==
+	      chip.reports[0] + chip.reports[1] + chip.others &&
+	      wt.txfree_other == chip.others && wt.txfree_full,
 	      "tx stats %u %u full %u %u rewrite %u, tx free %u %u host %u bad %u full %u",
 	      wt.descs[0], wt.descs[1], wt.full[0], wt.full[1], wt.rewrite,
 	      wt.txfree_events[0], wt.txfree_events[1], wt.txfree_host,

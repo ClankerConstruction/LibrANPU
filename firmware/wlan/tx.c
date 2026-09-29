@@ -158,19 +158,43 @@ static void txf_put(struct wlan_radio *r, u32 kind, u32 token, u32 wcid,
 	ts.hf_widx = ts.hf_widx + 1 == h->entries ? 0 : ts.hf_widx + 1;
 }
 
+/* another report on the ring (tx status, events): as it came */
+static bool txf_other(struct wlan_radio *r, u32 b, const volatile u32 *ev,
+		      u32 len)
+{
+	struct wlan_host_ring *h = &r->htxf;
+	u32 i, n = (len + 7) / 8, words = (len + 3) / 4;
+
+	if (txf_room(r) < n + 1)
+		return false;
+	txf_put(r, LIBRANPU_TXFREE_EVENT, len, b, 0, 0);
+	for (i = 0; i < n; i++) {
+		volatile u32 *e = (u32 *)(h->base + 8 * ts.hf_widx);
+
+		e[0] = ev[2 * i];
+		e[1] = 2 * i + 1 < words ? ev[2 * i + 1] : 0;
+		ts.hf_widx = ts.hf_widx + 1 == h->entries ? 0 : ts.hf_widx + 1;
+	}
+	r->txstats.txfree_other++;
+	return true;
+}
+
 /*
  * One report: host tokens and station status to the host. Each word
  * gives at most one record, so room for them all is checked first.
  */
-static bool txf_report(struct wlan_radio *r, const volatile u32 *ev, u32 len)
+static bool txf_report(struct wlan_radio *r, u32 b, const volatile u32 *ev,
+		       u32 len)
 {
 	u32 words = len / 4, total, seen = 0, wcid = LIBRANPU_TXFREE_NO_WCID;
 	u32 ver, i, k;
 
-	if (FIELD_GET(TXF_TYPE, ev[0]) != TXF_TYPE_NOTIFY || len < TXF_HDR_LEN) {
+	if (len < TXF_HDR_LEN) {
 		r->txstats.txfree_bad++;
 		return true;
 	}
+	if (FIELD_GET(TXF_TYPE, ev[0]) != TXF_TYPE_NOTIFY)
+		return txf_other(r, b, ev, len);
 	ver = FIELD_GET(TXF_VER, ev[1]);
 	if (ver < 5) {
 		r->txstats.txfree_bad++;
@@ -234,7 +258,7 @@ static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 			ev = plat_cached((void *)ev);
 			for (o = 0; o < len; o += LINE)
 				plat_dcache_inv(ev + o);
-			if (!txf_report(r, (const volatile u32 *)ev, len)) {
+			if (!txf_report(r, b, (const volatile u32 *)ev, len)) {
 				r->txstats.txfree_full++;
 				break;
 			}

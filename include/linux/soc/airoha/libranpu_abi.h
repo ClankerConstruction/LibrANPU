@@ -396,7 +396,8 @@ struct libranpu_wlan_tx_stats {
 	__le32 txfree_events[2];	/* per tx free ring: chip reports */
 	__le32 txfree_host;		/* host token records */
 	__le32 txfree_npu;		/* NPU tokens freed */
-	__le32 txfree_bad;		/* not a report, old version or cut short */
+	__le32 txfree_bad;		/* old version, cut short or too long */
+	__le32 txfree_other;		/* other chip reports passed on */
 	__le32 txfree_full;		/* host tx free ring full: waited */
 };
 
@@ -405,6 +406,8 @@ struct libranpu_wlan_tx_stats {
 /*
  * Host tx free ring entry, 8 bytes, NPU to host, in the order of the
  * chip's reports. A status entry counts for the station, not a token.
+ * An event entry carries another chip report on the ring as it came:
+ * token is its length, wcid its ring, the next entries its bytes.
  */
 struct libranpu_host_txfree {
 	__le16 token;
@@ -418,6 +421,7 @@ struct libranpu_host_txfree {
 enum libranpu_txfree_kind {
 	LIBRANPU_TXFREE_TOKEN = 1,
 	LIBRANPU_TXFREE_STATUS,
+	LIBRANPU_TXFREE_EVENT,
 };
 
 #define LIBRANPU_TXFREE_NO_WCID		0xffff
