@@ -29,6 +29,14 @@ static bool uart;
 module_param(uart, bool, 0444);
 MODULE_PARM_DESC(uart, "let the NPU print boot and fault lines on the SoC console");
 
+/* BOOT_CONFIG takes effect on a 0 to 1 write of BOOT_TRIGGER */
+static void libranpu_harts(struct libranpu *npu, u32 mask)
+{
+	npu_wr(npu, REG_BOOT_TRIGGER, 0);
+	npu_wr(npu, REG_BOOT_CONFIG, mask);
+	npu_wr(npu, REG_BOOT_TRIGGER, 1);
+}
+
 static bool span_ok(u32 start, u32 len, u32 win, u32 win_len)
 {
 	return start >= win && len <= win_len && start - win <= win_len - len;
@@ -178,9 +186,8 @@ static int libranpu_boot(struct libranpu *npu)
 	npu_wr(npu, REG_MIB(MIB_BOOT_BLOCK), npu->shm_dma + SHM_BOOT);
 	for (h = 0; h < npu->hdr.harts; h++)
 		npu_wr(npu, REG_BOOT_BASE(h), entry);
-	npu_wr(npu, REG_BOOT_CONFIG, GENMASK(npu->hdr.harts - 1, 0));
 	t0 = ktime_get();
-	npu_wr(npu, REG_BOOT_TRIGGER, 1);
+	libranpu_harts(npu, GENMASK(npu->hdr.harts - 1, 0));
 
 	err = read_poll_timeout(boot_word, ready,
 				ready == LIBRANPU_BOOT_READY, 500,
@@ -227,7 +234,7 @@ static void libranpu_halt(struct libranpu *npu)
 			   NULL, 0, &rsp, &len);
 	if (err)
 		dev_warn(npu->dev, "RESET: %d\n", err);
-	npu_wr(npu, REG_BOOT_CONFIG, 0);
+	libranpu_harts(npu, 0);
 }
 
 static int libranpu_probe(struct platform_device *pdev)
@@ -263,7 +270,7 @@ static int libranpu_probe(struct platform_device *pdev)
 	npu->irq = irq;
 
 	/* halt whatever runs, before its memory is rewritten */
-	npu_wr(npu, REG_BOOT_CONFIG, 0);
+	libranpu_harts(npu, 0);
 
 	err = libranpu_shm_init(npu);
 	if (!err)
@@ -300,7 +307,7 @@ err_reset:
 	devm_free_irq(dev, irq, npu);
 	goto err_free;
 err_halt:
-	npu_wr(npu, REG_BOOT_CONFIG, 0);
+	libranpu_harts(npu, 0);
 err_free:
 	libranpu_devlink_free(npu);
 	return err;
