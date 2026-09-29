@@ -330,6 +330,8 @@ static void libranpu_remove(struct platform_device *pdev)
 	libranpu_devlink_free(npu);
 }
 
+static struct platform_driver libranpu_driver;
+
 struct libranpu *libranpu_get(struct device *dev)
 {
 	struct platform_device *pdev;
@@ -344,6 +346,12 @@ struct libranpu *libranpu_get(struct device *dev)
 	of_node_put(np);
 	if (!pdev)
 		return ERR_PTR(-ENODEV);
+
+	/* another NPU driver may own the node: its drvdata is not ours */
+	if (pdev->dev.driver && pdev->dev.driver != &libranpu_driver.driver) {
+		put_device(&pdev->dev);
+		return ERR_PTR(-ENODEV);
+	}
 
 	npu = platform_get_drvdata(pdev);
 	if (!npu || !try_module_get(THIS_MODULE)) {
