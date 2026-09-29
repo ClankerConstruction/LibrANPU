@@ -285,6 +285,32 @@ static void ha_probe_one(struct seq_file *s, struct ha_probe *hp, int r,
 	npu_wr(npu, HA_RX_BASE(r) + 4, 0);
 }
 
+/* radio 0 counters since its attach, one name and value per line */
+static int wlan_stats_show(struct seq_file *s, void *data)
+{
+	struct libranpu_wlan_stats st;
+	const __le32 *v = (const __le32 *)&st;
+	static const char * const names[] = {
+		"rx_frames", "rx_ind0", "rx_ind1", "rx_ind2", "rx_ind3",
+		"rx_ind4", "rx_ind5", "rx_ind6", "rx_ind7", "rx_ind8",
+		"rx_ind9", "rx_ind10", "rx_ind11", "rx_ind12", "rx_ind13",
+		"rx_ind14", "rx_ind15", "rx_stale", "rx_pn_fail", "rx_bad_id",
+		"host_segs", "host_full", "host_dropped", "buf_refill0",
+		"buf_refill1", "buf_returned", "buf_bad_ret", "buf_empty",
+	};
+	int i, err;
+
+	BUILD_BUG_ON(sizeof(names) / sizeof(names[0]) != sizeof(st) / 4);
+	err = libranpu_wlan_stats(s->private, 0, &st);
+	if (err)
+		return err;
+	for (i = 0; i < ARRAY_SIZE(names); i++)
+		if (v[i])
+			seq_printf(s, "%s %u\n", names[i], le32_to_cpu(v[i]));
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(wlan_stats);
+
 static int ha_probe_show(struct seq_file *s, void *data)
 {
 	struct libranpu *npu = s->private;
@@ -335,6 +361,8 @@ void libranpu_debugfs_init(struct libranpu *npu)
 	debugfs_create_file("status", 0400, npu->debugfs, npu, &status_fops);
 	debugfs_create_file("dbg_block", 0400, npu->debugfs, npu,
 			    &dbg_block_fops);
+	debugfs_create_file("wlan_stats", 0400, npu->debugfs, npu,
+			    &wlan_stats_fops);
 	debugfs_create_file("cmd_bench", 0400, npu->debugfs, npu,
 			    &cmd_bench_fops);
 	if (le32_to_cpu(npu->caps.services) & LIBRANPU_SVC_F_DBG)

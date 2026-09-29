@@ -320,6 +320,17 @@ static int wlan_force_host(struct cmd_ctx *c)
 	return 0;
 }
 
+static int wlan_get_stats(struct cmd_ctx *c)
+{
+	const struct libranpu_wlan_ctl *w = (const void *)c->req;
+
+	if (w->radio)
+		return -EINVAL;
+	memcpy(c->rsp, &wlan_radio.stats, sizeof(wlan_radio.stats));
+	c->rsp_len = sizeof(wlan_radio.stats);
+	return 0;
+}
+
 static const struct cmd_handler wlan_handlers[] = {
 	{ LIBRANPU_WLAN_ATTACH, 24, wlan_attach },
 	{ LIBRANPU_WLAN_START, sizeof(struct libranpu_wlan_ctl), wlan_start },
@@ -327,6 +338,8 @@ static const struct cmd_handler wlan_handlers[] = {
 	{ LIBRANPU_WLAN_DETACH, sizeof(struct libranpu_wlan_ctl), wlan_detach },
 	{ LIBRANPU_WLAN_FORCE_HOST, sizeof(struct libranpu_wlan_ctl),
 	  wlan_force_host },
+	{ LIBRANPU_WLAN_GET_STATS, sizeof(struct libranpu_wlan_ctl),
+	  wlan_get_stats },
 };
 
 const struct cmd_service wlan_service = {

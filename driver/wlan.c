@@ -141,6 +141,19 @@ int libranpu_wlan_force_host(struct libranpu *npu, u8 radio, bool on)
 }
 EXPORT_SYMBOL_GPL(libranpu_wlan_force_host);
 
+int libranpu_wlan_stats(struct libranpu *npu, u8 radio,
+			struct libranpu_wlan_stats *stats)
+{
+	struct libranpu_wlan_ctl c = { .radio = radio };
+	u16 len = sizeof(*stats);
+
+	memset(stats, 0, sizeof(*stats));
+	return libranpu_cmd(npu, LIBRANPU_SVC_WLAN,
+			    LIBRANPU_WLAN_GET_STATS, &c, sizeof(c), stats,
+			    &len);
+}
+EXPORT_SYMBOL_GPL(libranpu_wlan_stats);
+
 void libranpu_ha_ring_init(struct libranpu *npu, bool rx, u32 ring,
 			   dma_addr_t base, u32 entries)
 {

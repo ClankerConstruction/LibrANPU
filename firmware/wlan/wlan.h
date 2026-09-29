@@ -93,6 +93,7 @@ struct wlan_radio {
 	u32 ack[WT_MAX];		/* each task: its view of state */
 	struct libranpu_wlan_audit audit;	/* buffer task, when stopped */
 	u32 delivered;			/* host task: ids given to the host */
+	struct libranpu_wlan_stats stats;
 };
 
 extern struct wlan_radio wlan_radio;

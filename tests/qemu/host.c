@@ -474,6 +474,7 @@ struct chip {
 	u32 rxd_gen;
 	u32 sent;
 	u32 stale;
+	u32 gap;			/* big sequence gap: a good frame */
 };
 
 static struct chip chip;
@@ -519,7 +520,8 @@ static int chip_rx(u32 band, u32 len, bool last, u32 tag, u32 ind)
 		chip.rxd_gen = (chip.rxd_gen + 1) & 0xf;
 	}
 	chip.sent++;
-	chip.stale += !!ind;
+	chip.stale += ind == 1 || ind == 2;
+	chip.gap += ind == 6;
 	return 0;
 }
 
@@ -548,7 +550,9 @@ static u32 host_rx_poll(u32 *frames_seen)
 				}
 			if (ctrl & LIBRANPU_HRX_LAST)
 				(*frames_seen)++;
-			if (segs != 1 && segs != 3)
+			if ((segs != 1 && segs != 3) ||
+			    FIELD_GET(LIBRANPU_HRX_REASON, e->info) ==
+			    LIBRANPU_HRX_ERROR)
 				host_bad++;
 		}
 		e->ctrl = 0;
@@ -590,6 +594,8 @@ static void wlan_session(u32 frames)
 	struct libranpu_wlan_attach a;
 	struct libranpu_wlan_attach_rsp rsp;
 	struct libranpu_wlan_audit au;
+	struct libranpu_wlan_stats ws;
+	struct libranpu_wlan_ctl w = { 0 };
 	u32 i, t0, seen = 0, want = 0, band = 0;
 	s32 st;
 
@@ -646,14 +652,15 @@ static void wlan_session(u32 frames)
 	/* single frames on both bands, then 3-segment chains */
 	for (i = 0, t0 = cycles(); i < frames; ) {
 		bool chain = i >= frames / 2;
-		u32 segs = chain ? 3 : 1, s, ind = !chain && i % 10 == 5;
+		u32 segs = chain ? 3 : 1, s;
+		u32 ind = chain ? 0 : i % 10 == 5 ? 1 : 0;
 
 		if (chip_rxd_used() + segs < RXD_ENTRIES - 8) {
 			for (s = 0; s < segs; s++)
 				while (chip_rx(band, 60 + (i % 1400), s == segs - 1,
 					       i, ind) != 0)
 					host_rx_poll(&seen);
-			want += !ind;
+			want += ind != 1;
 			band ^= 1;
 			i++;
 		}
@@ -669,6 +676,12 @@ static void wlan_session(u32 frames)
 	      host_bad);
 	CHECK(host_got == chip.sent - chip.stale, "segments %u of %u - %u",
 	      host_got, chip.sent, chip.stale);
+	CHECK(cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w, sizeof(w),
+		  &ws, NULL) == 0 && ws.rx_frames == chip.sent &&
+	      ws.rx_stale == chip.stale && ws.rx_ind[6] == chip.gap &&
+	      ws.host_segs == host_got && !ws.rx_pn_fail,
+	      "stats frames %u stale %u gap %u segs %u", ws.rx_frames,
+	      ws.rx_stale, ws.rx_ind[6], ws.host_segs);
 
 	/* let the buffer task take the last returns, then stop */
 	for (t0 = cycles(); cycles() - t0 < 20000000;)

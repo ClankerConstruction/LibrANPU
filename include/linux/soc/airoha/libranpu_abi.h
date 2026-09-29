@@ -274,6 +274,7 @@ enum libranpu_wlan_op {
 	LIBRANPU_WLAN_STOP,
 	LIBRANPU_WLAN_DETACH,
 	LIBRANPU_WLAN_FORCE_HOST,
+	LIBRANPU_WLAN_GET_STATS,	/* ctl in, stats out */
 };
 
 enum libranpu_wlan_backend {
@@ -353,6 +354,22 @@ struct libranpu_wlan_audit {
 	__le32 transit;			/* between NPU tasks */
 	__le32 lost;			/* none of the above */
 	__le32 expired;			/* bounded waits that ran out */
+};
+
+/* since attach; each field is counted by one NPU task */
+struct libranpu_wlan_stats {
+	__le32 rx_frames;		/* chip completions */
+	__le32 rx_ind[16];		/* per chip indication reason */
+	__le32 rx_stale;		/* repeated or old: dropped */
+	__le32 rx_pn_fail;		/* to the host as errors */
+	__le32 rx_bad_id;
+	__le32 host_segs;		/* host rx entries written */
+	__le32 host_full;		/* host rx ring full */
+	__le32 host_dropped;		/* segments cut short */
+	__le32 buf_refill[2];		/* per band: chip slots refilled */
+	__le32 buf_returned;		/* ids back from the host */
+	__le32 buf_bad_ret;
+	__le32 buf_empty;		/* refills the pool could not cover */
 };
 
 #define LIBRANPU_RX_BUF_SIZE		2048
@@ -539,6 +556,7 @@ LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_wlan_ring) == 16);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_wlan_attach) <=
 		    LIBRANPU_CMD_PAYLOAD);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_host_rx) == 24);
+LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_wlan_stats) <= 240);
 LIBRANPU_ABI_ASSERT(sizeof(struct libranpu_dbg_block) <=
 		    LIBRANPU_DBG_SIZE);
 

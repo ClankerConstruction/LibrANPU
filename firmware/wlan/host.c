@@ -22,8 +22,6 @@ struct host_state {
 	struct wlan_rx_msg seg[WLAN_MAX_SEGS];
 	u32 nseg;
 	u32 delivered;
-	u32 dropped;
-	u32 full;
 };
 
 static struct host_state hs;
@@ -56,7 +54,7 @@ static bool host_deliver(struct wlan_radio *r)
 	u32 i, len = 0, n = hs.nseg;
 
 	if (ring_room(h, false) < n && ring_room(h, true) < n) {
-		hs.full++;
+		r->stats.host_full++;
 		return false;
 	}
 
@@ -89,18 +87,19 @@ static bool host_deliver(struct wlan_radio *r)
 	hs.widx = (hs.widx + n) % h->entries;
 	hs.pending += n;
 	hs.delivered += n;
+	r->stats.host_segs += n;
 	hs.nseg = 0;
 	return true;
 }
 
 /* segments of a frame cut short go back to the pool */
-static bool host_drop(u16 id)
+static bool host_drop(struct wlan_radio *r, u16 id)
 {
 	if (!spsc_room(&hs.drop, 1))
 		return false;
 	*(u32 *)spsc_slot(&hs.drop, 0) = id;
 	spsc_publish(&hs.drop, 1);
-	hs.dropped++;
+	r->stats.host_dropped++;
 	return true;
 }
 
@@ -141,11 +140,11 @@ int wlan_host_task(struct task *t, int budget)
 		struct wlan_rx_msg *m = spsc_peek(&hs.in, 0);
 
 		if (st == WLAN_STOPPING) {
-			if (!host_drop(m->id))
+			if (!host_drop(r, m->id))
 				break;
 		} else if (hs.nseg == WLAN_MAX_SEGS) {
 			/* no last segment in reach: drop what is held */
-			while (hs.nseg && host_drop(hs.seg[hs.nseg - 1].id))
+			while (hs.nseg && host_drop(r, hs.seg[hs.nseg - 1].id))
 				hs.nseg--;
 			if (hs.nseg)
 				break;
@@ -161,7 +160,7 @@ int wlan_host_task(struct task *t, int budget)
 	}
 
 	if (st == WLAN_STOPPING) {
-		while (hs.nseg && host_drop(hs.seg[hs.nseg - 1].id))
+		while (hs.nseg && host_drop(r, hs.seg[hs.nseg - 1].id))
 			hs.nseg--;
 		host_publish(r, true);
 		if (!hs.nseg && !spsc_avail(&hs.in, 1))

@@ -20,8 +20,6 @@ struct buf_state {
 	u32 refill[WLAN_BANDS];		/* next slot to refill */
 	u32 unpublished[WLAN_BANDS];
 	u32 returned;			/* ids back from the host */
-	u32 bad_ret;
-	u32 empty;			/* refills the pool could not cover */
 };
 
 static struct buf_state bs;
@@ -69,7 +67,7 @@ static u32 take_host(struct wlan_radio *r)
 		u32 id = e[bs.ret_cons] & 0xFFFF;
 
 		if (id >= r->pool_ids)
-			bs.bad_ret++;
+			r->stats.buf_bad_ret++;
 		else
 			put_id(r, id);
 		bs.ret_cons = (bs.ret_cons + 1) % h->entries;
@@ -77,6 +75,7 @@ static u32 take_host(struct wlan_radio *r)
 	}
 	if (n) {
 		bs.returned += n;
+		r->stats.buf_returned += n;
 		REG32(h->regs + RET_CONS) = bs.ret_cons;
 	}
 	return n;
@@ -95,7 +94,7 @@ static u32 refill(struct wlan_radio *r, u32 b, u32 budget)
 		if (!(d[1] & WLAN_RX_DESC_DONE))
 			break;
 		if (!pool_get(&r->pool, &id, 1)) {
-			bs.empty++;
+			r->stats.buf_empty++;
 			break;
 		}
 		d[0] = wlan_pool_bus(r, id) + LIBRANPU_RX_HEADROOM;
@@ -106,6 +105,7 @@ static u32 refill(struct wlan_radio *r, u32 b, u32 budget)
 		n++;
 	}
 	if (n) {
+		r->stats.buf_refill[b] += n;
 		bs.refill[b] = idx;
 		bs.unpublished[b] += n;
 		if (bs.unpublished[b] >= REFILL_PUBLISH || n < budget) {

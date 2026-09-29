@@ -25,9 +25,6 @@ struct rx_state {
 	u32 gen;
 	struct spsc_prod host;
 	struct spsc_prod drop;
-	u32 bad_id;
-	u32 frames;
-	u32 stale;			/* repeated or old: dropped */
 };
 
 static struct rx_state rxs;
@@ -41,15 +38,16 @@ static void rx_reset(struct wlan_radio *r)
 	spsc_prod_init(&rxs.drop, r->rx2buf);
 }
 
-static u8 rx_reason(const struct wlan_radio *r, u32 w1, u32 w2)
+static u8 rx_reason(struct wlan_radio *r, u32 w1, u32 w2)
 {
-	if ((w1 & RXD_ERR) || FIELD_GET(RXD_IND, w2))
+	if ((w1 & RXD_ERR) || FIELD_GET(RXD_IND, w2)) {
+		r->stats.rx_pn_fail++;
 		return LIBRANPU_HRX_ERROR;
+	}
 	if (w2 & RXD_TO_HOST)
 		return LIBRANPU_HRX_CHIP;
 	if (FIELD_GET(RXD_DST, w1) != 1)
 		return LIBRANPU_HRX_RAW;
-	(void)r;
 	return LIBRANPU_HRX_FORCED;
 }
 
@@ -60,12 +58,12 @@ static bool rx_one(struct wlan_radio *r, u32 w1, u32 w2, bool stopping)
 	struct wlan_rx_msg *m;
 
 	if (unlikely(id >= r->pool_ids)) {
-		rxs.bad_id++;
+		r->stats.rx_bad_id++;
 		return true;
 	}
 	/* the chip's reorder saw these already: never to the stack */
 	if (ind == RXD_IND_REPEAT || ind == RXD_IND_OLDPKT) {
-		rxs.stale++;
+		r->stats.rx_stale++;
 		stopping = true;
 	}
 	if (stopping) {
@@ -110,6 +108,7 @@ int wlan_rx_task(struct task *t, int budget)
 			break;
 		if (!rx_one(r, d[1], d[2], st == WLAN_STOPPING))
 			break;
+		r->stats.rx_ind[FIELD_GET(RXD_IND, d[2])]++;
 		n++;
 		if (++rxs.ridx == w->entries) {
 			rxs.ridx = 0;
@@ -118,7 +117,7 @@ int wlan_rx_task(struct task *t, int budget)
 	}
 
 	if (n) {
-		rxs.frames += n;
+		r->stats.rx_frames += n;
 		/* the chip may reuse every slot up to the last one read */
 		REG32(w->regs + 8) = rxs.ridx ? rxs.ridx - 1 : w->entries - 1u;
 	} else if (st == WLAN_STOPPING) {
