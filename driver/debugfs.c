@@ -403,6 +403,61 @@ static ssize_t wlan_aqm_write(struct file *file, const char __user *ubuf,
 	return err ?: count;
 }
 
+/* bench: write a wcid, read its frames in the chip and in-chip delay */
+static int wlan_sta_q_set(void *data, u64 val)
+{
+	struct libranpu *npu = data;
+
+	if (val >= 0xffff)
+		return -EINVAL;
+	npu->dbg_wcid = val;
+	return 0;
+}
+
+static int wlan_sta_q_show(struct seq_file *s, void *data)
+{
+	struct libranpu *npu = s->private;
+	struct libranpu_wlan_sta_q q = { .wcid = cpu_to_le16(npu->dbg_wcid) };
+	struct libranpu_wlan_sta_q o = {};
+	u16 len = sizeof(o);
+	int err;
+
+	err = libranpu_cmd(npu, LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_STA_Q,
+			   &q, sizeof(q), &o, &len);
+	if (err)
+		return err;
+	seq_printf(s, "wcid %u in_chip %u delay_us %u dropping %u count %u\n",
+		   le16_to_cpu(o.wcid), le16_to_cpu(o.in_chip),
+		   le32_to_cpu(o.delay_us), o.dropping, le16_to_cpu(o.count));
+	return 0;
+}
+
+static int wlan_sta_q_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, wlan_sta_q_show, inode->i_private);
+}
+
+static ssize_t wlan_sta_q_write(struct file *file, const char __user *ubuf,
+				size_t count, loff_t *ppos)
+{
+	struct libranpu *npu = ((struct seq_file *)file->private_data)->private;
+	u32 wcid;
+	int err;
+
+	err = kstrtou32_from_user(ubuf, count, 0, &wcid);
+	if (!err)
+		err = wlan_sta_q_set(npu, wcid);
+	return err ?: count;
+}
+
+static const struct file_operations wlan_sta_q_fops = {
+	.open = wlan_sta_q_open,
+	.read = seq_read,
+	.write = wlan_sta_q_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static const struct file_operations wlan_aqm_fops = {
 	.open = wlan_aqm_open,
 	.read = seq_read,
@@ -466,6 +521,8 @@ void libranpu_debugfs_init(struct libranpu *npu)
 	debugfs_create_file_unsafe("wlan_force_host", 0200, npu->debugfs, npu,
 				   &wlan_force_host_fops);
 	debugfs_create_file("wlan_aqm", 0600, npu->debugfs, npu, &wlan_aqm_fops);
+	debugfs_create_file("wlan_sta_q", 0600, npu->debugfs, npu,
+			    &wlan_sta_q_fops);
 	/* bench switch: 0 copies every rx frame */
 	debugfs_create_bool("wlan_rx_lend", 0600, npu->debugfs, &npu->rxb.lend);
 	debugfs_create_file("cmd_bench", 0400, npu->debugfs, npu,

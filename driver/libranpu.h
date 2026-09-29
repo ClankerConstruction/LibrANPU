@@ -109,6 +109,7 @@ struct libranpu {
 	struct blocking_notifier_head notifier;
 	struct devlink *devlink;
 	struct dentry *debugfs;
+	u16 dbg_wcid;			/* debugfs wlan_sta_q */
 	ktime_t boot_time;
 };
 
