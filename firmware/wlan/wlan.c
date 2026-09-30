@@ -486,8 +486,9 @@ static int wlan_aqm(struct cmd_ctx *c)
 	if (q->radio)
 		return -EINVAL;
 	if (q->set) {
-		if (!q->interval_us || q->interval_us > 1000000 ||
-		    q->delay_us > 1000000)
+		/* 16 intervals must fit the signed 32-bit cycle clock */
+		if (!q->interval_us || q->interval_us > AQM_INTERVAL_MAX_US ||
+		    q->delay_us > q->interval_us)
 			return -EINVAL;
 		a->limit = q->limit;
 		a->target = q->target;

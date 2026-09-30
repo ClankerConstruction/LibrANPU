@@ -97,9 +97,11 @@ enum aqm_verdict aqm_decide(const struct aqm_cfg *c, struct aqm_sta *s,
 			s->next = now;
 	} else {
 		/* back to dropping soon after it ended: keep the rate */
+		s32 since = now - s->next;
+
 		n = (u16)(s->count - s->last);
-		s->count = n > 1 && (s32)(now - s->next) < (s32)(16 * c->interval) ?
-			   n : 1;
+		s->count = n > 1 && (since < 0 ||
+				     (u64)since < 16ull * c->interval) ? n : 1;
 		s->last = s->count;
 		s->flags |= DROPPING;
 		s->next = now;
