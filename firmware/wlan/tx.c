@@ -37,6 +37,7 @@ struct tx_state {
 	u32 tail[WLAN_BANDS];		/* oldest slot the chip holds */
 	u32 cons[WLAN_BANDS];		/* next host entry */
 	u32 put[WLAN_BANDS];		/* descriptors not published yet */
+	bool lan_first;
 	u32 fidx[WLAN_BANDS];		/* next tx free slot */
 	u32 fhole[WLAN_BANDS];		/* the one slot without a buffer */
 	u32 hf_widx;			/* host tx free ring */
@@ -381,10 +382,15 @@ int wlan_tx_task(struct task *t, int budget)
 		return n;
 	}
 
-	n += lan_drain(r, (u32)budget * TX_BATCH);
+	/* LAN and host frames share the chip rings: take turns first */
+	ts.lan_first = !ts.lan_first;
+	if (ts.lan_first)
+		n += lan_drain(r, (u32)budget * TX_BATCH);
 	for (b = 0; b < WLAN_BANDS; b++)
 		if (r->tx[b].desc)
 			n += tx_band(r, b, (u32)budget * TX_BATCH);
+	if (!ts.lan_first)
+		n += lan_drain(r, (u32)budget * TX_BATCH);
 	tx_kick(r);
 	return n;
 }
