@@ -239,6 +239,12 @@ int libranpu_rxb_init(struct libranpu *npu)
 				      &b->held_dma, GFP_KERNEL);
 	if (!b->ready || !b->held)
 		return -ENOMEM;
+	/* the NPU reads it at attach; out of its reach, nothing is lent */
+	if (b->held_dma < NPU_DRAM_WIN_START ||
+	    b->held_dma + BITS_TO_U32(b->ids) * sizeof(u32) > NPU_DRAM_WIN_END) {
+		dev_warn(npu->dev, "rx buffers copied: held map out of reach\n");
+		return 0;
+	}
 
 	if (PAGE_SIZE / LIBRANPU_RX_BUF_SIZE > BITS_PER_TYPE(u8) ||
 	    !PAGE_ALIGNED(base) || b->ids % (PAGE_SIZE / LIBRANPU_RX_BUF_SIZE))
