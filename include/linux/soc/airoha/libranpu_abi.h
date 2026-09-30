@@ -286,7 +286,7 @@ struct libranpu_wlan_sta_q {
 	__le16 wcid;
 	__le16 in_chip;			/* frames sent, not yet freed */
 	__le16 count;			/* drops in the current dropping state */
-	__le32 delay_us;		/* the last timed frame's time in the chip */
+	__le32 delay_us;		/* the chip's last reported time in it */
 };
 
 /*

@@ -3,7 +3,9 @@
  * Per-station limit on LAN to WiFi frames in the chip. Frames wait
  * there outside any host queue; a station's queue that stands above
  * target, in frames or in time, for an interval starts drops spaced
- * interval / sqrt(count), and dipping below ends them.
+ * interval / sqrt(count), and dipping below ends them. The time is the
+ * chip's own, reported with each group of freed frames; one frame is
+ * watched so that a stall without reports counts too.
  */
 
 #include "wlan/aqm.h"
@@ -21,6 +23,7 @@ void aqm_defaults(struct aqm_cfg *c, u32 mhz)
 	c->min_q = 64;
 	c->small = 256;
 	c->lost = 1000000 * mhz;
+	c->ms = 1000 * mhz;
 }
 
 void aqm_sta_init(struct aqm_sta *s)
@@ -45,7 +48,7 @@ static u32 isqrt(u32 x)
 	return r;
 }
 
-/* time in the chip: the last timed frame's, or the one out if older */
+/* time in the chip: the last reported, or the watched frame's if older */
 static u32 sta_delay(const struct aqm_cfg *c, struct aqm_sta *s, u32 now)
 {
 	u32 age;
@@ -124,11 +127,14 @@ void aqm_sent(struct aqm_sta *s, u16 tok, u32 now)
 	}
 }
 
-void aqm_done(struct aqm_sta *s, u16 tok, u32 now)
+void aqm_done(struct aqm_sta *s, u16 tok)
 {
 	s->done++;
-	if (s->probe == tok) {
-		s->delay = now - s->probe_t;
+	if (s->probe == tok)
 		s->probe = AQM_NONE;
-	}
+}
+
+void aqm_report(const struct aqm_cfg *c, struct aqm_sta *s, u32 ms)
+{
+	s->delay = ms * c->ms;
 }

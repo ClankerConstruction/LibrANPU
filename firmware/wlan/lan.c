@@ -171,9 +171,16 @@ bool lan_token_free(struct wlan_radio *r, u32 id)
 	}
 	l->tok_sta[id] = AQM_NOT_SENT;
 	if (w != AQM_NONE)
-		aqm_done(&l->sta[w], id, cycles());
+		aqm_done(&l->sta[w], id);
 	pool_put(&l->free, id, 0, l->tokens - 1);
 	return true;
+}
+
+/* the chip's time in it, in ms, for a group of a station's frames */
+void lan_delay(struct wlan_radio *r, u32 wcid, u32 ms)
+{
+	if (r->lan.tokens && wcid < AQM_STAS)
+		aqm_report(&r->aqm, &r->lan.sta[wcid], ms);
 }
 
 u32 lan_in_chip(struct wlan_radio *r)

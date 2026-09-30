@@ -162,6 +162,7 @@ void lan_reset(struct wlan_radio *r);
 void lan_stop(struct wlan_radio *r);
 u32 lan_drain(struct wlan_radio *r, u32 budget);
 bool lan_token_free(struct wlan_radio *r, u32 id);
+void lan_delay(struct wlan_radio *r, u32 wcid, u32 ms);
 u32 lan_in_chip(struct wlan_radio *r);
 
 /* task side: the state, and after it everything control set up for it */

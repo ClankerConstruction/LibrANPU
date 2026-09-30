@@ -19,8 +19,8 @@ static u32 run(struct aqm_sta *s, u32 *now, u32 q, u32 delay_ms,
 		aqm_sent(s, tok++, *now);
 	for (; (s32)(*now - end) < 0; *now += 100) {
 		/* one frame out, one in, 100 us apart: a standing queue */
-		aqm_done(s, s->probe, *now);
-		s->delay = delay_ms * MS;
+		aqm_done(s, s->probe);
+		aqm_report(&cfg, s, delay_ms);
 		if (aqm_decide(&cfg, s, len, *now) != AQM_PASS)
 			drops++;
 		else
@@ -79,7 +79,7 @@ TEST(hard_limit)
 	for (t = 0; t < 100; t++)
 		aqm_sent(&s, t, 0);
 	CHECK_EQ(aqm_decide(&cfg, &s, 64, 0), AQM_LIMIT);
-	aqm_done(&s, 5, 10);
+	aqm_done(&s, 5);
 	CHECK_EQ(aqm_decide(&cfg, &s, 64, 10), AQM_PASS);
 }
 
@@ -97,8 +97,26 @@ TEST(lost_report_retimes)
 	aqm_decide(&cfg, &s, 1500, 2000 * MS);
 	CHECK_EQ(s.probe, AQM_NONE);
 	aqm_sent(&s, 100, 2000 * MS);
-	aqm_done(&s, 100, 2003 * MS);
-	CHECK_EQ(s.delay, 3 * MS);
+	CHECK_EQ(s.probe, 100);
+	aqm_done(&s, 100);
+	CHECK_EQ(s.probe, AQM_NONE);
+}
+
+TEST(stall_counts_without_reports)
+{
+	struct aqm_sta s;
+	u32 now = 0, drops = 0;
+	u16 t;
+
+	aqm_defaults(&cfg, MHZ);
+	aqm_sta_init(&s);
+	aqm_report(&cfg, &s, 1);
+	for (t = 0; t < 100; t++)
+		aqm_sent(&s, t, 0);
+	/* nothing comes back: the watched frame's age stands above target */
+	for (now = 20 * MS; now < 400 * MS; now += MS)
+		drops += aqm_decide(&cfg, &s, 1500, now) == AQM_DROP;
+	CHECK(drops > 0);
 }
 
 TEST(off_passes_all)

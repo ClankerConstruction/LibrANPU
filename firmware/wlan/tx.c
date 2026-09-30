@@ -25,6 +25,7 @@
 #define TXF_PAIR		BIT(31)
 #define TXF_HEADER		BIT(30)
 #define TXF_WCID		GENMASK(23, 12)
+#define TXF_DELAY		GENMASK(11, 0)	/* ms, queued to released */
 #define TXF_COUNT		GENMASK(27, 24)
 #define TXF_STAT		GENMASK(29, 28)
 #define TXF_ID			GENMASK(14, 0)
@@ -257,10 +258,11 @@ static bool txf_report(struct wlan_radio *r, u32 b, const volatile u32 *ev,
 			continue;
 		}
 		if (v & TXF_HEADER) {
-			if (wcid != LIBRANPU_TXFREE_NO_WCID)
-				txf_put(r, LIBRANPU_TXFREE_STATUS, 0, wcid,
-					FIELD_GET(TXF_COUNT, v),
-					!!FIELD_GET(TXF_STAT, v));
+			if (wcid == LIBRANPU_TXFREE_NO_WCID)
+				continue;
+			txf_put(r, LIBRANPU_TXFREE_STATUS, 0, wcid,
+				FIELD_GET(TXF_COUNT, v), !!FIELD_GET(TXF_STAT, v));
+			lan_delay(r, wcid, FIELD_GET(TXF_DELAY, v));
 			continue;
 		}
 		for (k = 0; k < 2; k++) {

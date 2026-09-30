@@ -688,7 +688,7 @@ static void chip_txfree(u32 b, bool full)
 	ev[0] = 6u << 27 | n << 16 | len;
 	ev[1] = 5 << 16;
 	ev[2] = BIT(31) | (5 + b) << 12;
-	ev[3] = BIT(30) | 2 << 24 | b << 28;
+	ev[3] = BIT(30) | 2 << 24 | b << 28 | (7 + b);
 	for (i = 0; i < n; i += 2)
 		ev[4 + i / 2] = chip.pend[b][i] |
 				(i + 1 < n ? chip.pend[b][i + 1] : 0x7FFFu) << 15;
@@ -1201,6 +1201,14 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	      wt.txfree_events[0], wt.txfree_events[1], wt.txfree_host,
 	      wt.txfree_bad, wt.txfree_full, wt.lan_frames[0], wt.lan_frames[1],
 	      wt.txfree_npu, wt.lan_no_token, wt.lan_ring_full, wt.lan_bad);
+	/* the reports' delay reaches the station: 7 ms on band 0, 8 on 1 */
+	for (i = 0; i < 2; i++) {
+		struct libranpu_wlan_sta_q q = { .wcid = 5 + i }, o;
+
+		CHECK(cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_STA_Q, &q,
+			  sizeof(q), &o, NULL) == 0 && o.delay_us == 7000 + 1000 * i,
+		      "sta %u delay %u", 5 + i, o.delay_us);
+	}
 	out("tx: host %u, lan %u (no token %u, ring full %u), tx free host ring full %u\n",
 	    wt.descs[0] + wt.descs[1], lan_sent, wt.lan_no_token,
 	    wt.lan_ring_full, wt.txfree_full);
