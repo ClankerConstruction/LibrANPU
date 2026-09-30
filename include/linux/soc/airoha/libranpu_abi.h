@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		8
+#define LIBRANPU_ABI_MINOR		9
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -383,10 +383,12 @@ struct libranpu_wlan_attach {
 
 #define LIBRANPU_WLAN_RX		BIT(0)
 #define LIBRANPU_WLAN_TX		BIT(1)
+/* STOP: the chip's DMA is stopped, its frames are not waited for */
+#define LIBRANPU_WLAN_NO_DRAIN		BIT(2)
 
 struct libranpu_wlan_ctl {
 	__u8 radio;
-	__u8 dir;			/* LIBRANPU_WLAN_RX | _TX */
+	__u8 dir;			/* LIBRANPU_WLAN_RX | _TX | _NO_DRAIN */
 	__u8 on;			/* FORCE_HOST */
 	__u8 page;			/* GET_STATS: 0 rx, 1 tx */
 };

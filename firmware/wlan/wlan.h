@@ -112,6 +112,7 @@ struct wlan_radio {
 	u32 headroom;			/* chip writes at buffer + headroom */
 	u32 rx_ctrl;			/* rx descriptor word 1 */
 	u32 held;			/* ids the host held at attach */
+	bool no_drain;			/* this stop leaves the chip's frames */
 	u32 nbands;
 	struct wlan_ring rx[WLAN_BANDS];
 	struct wlan_ring rxdmad;

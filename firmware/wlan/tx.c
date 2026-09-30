@@ -377,7 +377,7 @@ int wlan_tx_task(struct task *t, int budget)
 	n = txf_all(r, (u32)budget * 8);
 	if (st == WLAN_STOPPING) {
 		lan_stop(r);
-		if (tx_drained(r)) {
+		if (tx_drained(r) || READ_ONCE(r->no_drain)) {
 			r->audit.lan_tokens = lan_in_chip(r);
 			WRITE_ONCE(r->ack[WT_TX], st);
 		}

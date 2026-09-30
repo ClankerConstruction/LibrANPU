@@ -921,6 +921,13 @@ static void ring_desc(struct libranpu_wlan_ring *r, u8 kind, u8 band,
 	r->base = base;
 }
 
+static s32 wlan_ctl_dir(u16 op, u8 dir, struct libranpu_wlan_audit *a)
+{
+	struct libranpu_wlan_ctl w = { .radio = 0, .dir = dir };
+
+	return cmd(LIBRANPU_SVC_WLAN, op, &w, sizeof(w), a, NULL);
+}
+
 static s32 wlan_ctl(u16 op, struct libranpu_wlan_audit *a)
 {
 	struct libranpu_wlan_ctl w = {
@@ -949,7 +956,7 @@ static void host_ret_held(u32 n)
 }
 
 /* nheld ids stay with the host from before; half come back mid-way */
-static void wlan_session(u32 frames, bool force, u32 nheld)
+static void wlan_session(u32 frames, bool force, u32 nheld, bool stall)
 {
 	struct libranpu_wlan_attach a;
 	volatile struct libranpu_wlan_ring *tbl = (void *)RING_TBL;
@@ -1215,6 +1222,22 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	w.page = 0;
 
 	/* let the buffer task take the last returns, then stop */
+	if (stall) {
+		/* frames the chip never takes, as when a reset stops its DMA */
+		host_tx(0, 32);
+		for (t0 = cycles(); cycles() - t0 < 20000000;)
+			;
+		t0 = cycles();
+		st = wlan_ctl_dir(LIBRANPU_WLAN_STOP, LIBRANPU_WLAN_RX |
+				  LIBRANPU_WLAN_TX | LIBRANPU_WLAN_NO_DRAIN, &au);
+		CHECK(st == 0 && au.tx_chip == 32 && !au.expired,
+		      "stop without drain %d, tx chip %u, expired %u",
+		      (int)st, au.tx_chip, au.expired);
+		out("wlan: stop without drain in %u cycles, %u frames left in the chip\n",
+		    cycles() - t0, au.tx_chip);
+		CHECK(wlan_ctl(LIBRANPU_WLAN_DETACH, &au) == 0, "detach");
+		return;
+	}
 	for (t0 = cycles(); cycles() - t0 < 20000000;)
 		;
 	st = wlan_ctl(LIBRANPU_WLAN_STOP, &au);
@@ -1249,11 +1272,13 @@ static void test_wlan(void)
 
 	FE(0xFE0) = 0;
 	FE(0x80C) = 0;
-	wlan_session(3000, false, 0);
+	wlan_session(3000, false, 0, false);
 	/* a second attach starts from scratch; all to the host */
-	wlan_session(1000, true, 0);
+	wlan_session(1000, true, 0, false);
 	/* the host still holds ids from before: the chip never gets them */
-	wlan_session(2000, false, 100);
+	wlan_session(2000, false, 100, false);
+	/* the chip stalls: a stop without drain does not wait for it */
+	wlan_session(1000, false, 0, true);
 }
 
 void host_main(void)

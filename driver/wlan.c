@@ -207,11 +207,13 @@ int libranpu_wlan_start(struct libranpu *npu, u8 radio, u8 dir)
 }
 EXPORT_SYMBOL_GPL(libranpu_wlan_start);
 
-int libranpu_wlan_stop(struct libranpu *npu, u8 radio,
+/* no drain: the chip's DMA is stopped, as in a reset */
+int libranpu_wlan_stop(struct libranpu *npu, u8 radio, bool drain,
 		       struct libranpu_wlan_audit *audit)
 {
 	return wlan_ctl(npu, LIBRANPU_WLAN_STOP, radio,
-			LIBRANPU_WLAN_RX | LIBRANPU_WLAN_TX, audit);
+			LIBRANPU_WLAN_RX | LIBRANPU_WLAN_TX |
+			(drain ? 0 : LIBRANPU_WLAN_NO_DRAIN), audit);
 }
 EXPORT_SYMBOL_GPL(libranpu_wlan_stop);
 

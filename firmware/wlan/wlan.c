@@ -389,6 +389,8 @@ static int wlan_stop(struct cmd_ctx *c)
 	if (r->state != WLAN_RUNNING || wctl.stopping)
 		return -EBUSY;
 
+	r->no_drain = w->dir & LIBRANPU_WLAN_NO_DRAIN;
+	wmb();
 	wctl.stopping = true;
 	wctl.ref = c->ref;
 	wctl.t0 = cycles();

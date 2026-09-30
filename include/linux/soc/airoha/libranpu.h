@@ -72,7 +72,7 @@ int libranpu_wlan_attach(struct libranpu *npu,
 			 struct libranpu_wlan_attach *req,
 			 struct libranpu_wlan_ring *rings, u32 nrings);
 int libranpu_wlan_start(struct libranpu *npu, u8 radio, u8 dir);
-int libranpu_wlan_stop(struct libranpu *npu, u8 radio,
+int libranpu_wlan_stop(struct libranpu *npu, u8 radio, bool drain,
 		       struct libranpu_wlan_audit *audit);
 int libranpu_wlan_detach(struct libranpu *npu, u8 radio,
 			 struct libranpu_wlan_audit *audit);
