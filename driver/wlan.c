@@ -151,6 +151,8 @@ int libranpu_wlan_attach(struct libranpu *npu,
 	req->rx_headroom = 0;
 	req->rx_buf_len = cpu_to_le16(npu->rxb.buf_len);
 	req->rx_held = cpu_to_le32(libranpu_rxb_attach(npu, ring_ids));
+	if (READ_ONCE(npu->force_host))
+		req->flags |= cpu_to_le32(LIBRANPU_WLAN_F_FORCE_HOST);
 	return libranpu_cmd(npu, LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_ATTACH,
 			    req, sizeof(*req), rsp, &len);
 }
@@ -177,8 +179,10 @@ int libranpu_wlan_detach(struct libranpu *npu, u8 radio,
 }
 EXPORT_SYMBOL_GPL(libranpu_wlan_detach);
 
+/* kept for the next attach too, which starts from its own flags */
 int libranpu_wlan_force_host(struct libranpu *npu, u8 radio, bool on)
 {
+	WRITE_ONCE(npu->force_host, on);
 	return wlan_ctl(npu, LIBRANPU_WLAN_FORCE_HOST, radio, on, NULL);
 }
 EXPORT_SYMBOL_GPL(libranpu_wlan_force_host);

@@ -102,6 +102,7 @@ struct libranpu {
 	int irq;
 	struct libranpu_rx_pool pool;
 	struct libranpu_rxb rxb;
+	bool force_host;		/* every rx frame to the host */
 	phys_addr_t tx_pool;		/* LAN to WiFi token buffers */
 	u32 tx_tokens;
 	/* protects the host adaptor line masks */
