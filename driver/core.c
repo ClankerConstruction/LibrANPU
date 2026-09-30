@@ -292,8 +292,11 @@ static int libranpu_probe(struct platform_device *pdev)
 		goto err_reset;
 
 	err = libranpu_wlan_init(npu);
-	if (err)
+	if (err) {
+		/* pool pages keep no reference bias past a failed init */
+		libranpu_wlan_deinit(npu);
 		goto err_reset;
+	}
 
 	libranpu_debugfs_init(npu);
 	libranpu_devlink_register(npu);
