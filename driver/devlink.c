@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* devlink: firmware and ABI versions of the running image */
+/*
+ * devlink: firmware and ABI versions of the running image, and rx
+ * buffer and tx token occupancy as resources.
+ */
 
 #include <net/devlink.h>
 
@@ -37,6 +40,45 @@ static int libranpu_info_get(struct devlink *dl, struct devlink_info_req *req,
 						buf);
 }
 
+enum {
+	LIBRANPU_RES_RX_BUFFERS = 1,
+	LIBRANPU_RES_TX_TOKENS,
+};
+
+/* rx buffers the network stack holds */
+static u64 libranpu_rx_buffers_occ(void *priv)
+{
+	struct libranpu *npu = priv;
+
+	return READ_ONCE(npu->rxb.lent);
+}
+
+/* NPU tokens under the frame engine's rings and in the chip */
+static u64 libranpu_tx_tokens_occ(void *priv)
+{
+	struct libranpu_wlan_tx_stats st;
+
+	if (libranpu_wlan_tx_stats(priv, 0, &st))
+		return 0;
+	return le32_to_cpu(st.lan_tokens_used);
+}
+
+static void libranpu_resource(struct libranpu *npu, const char *name,
+			      u64 size, u64 id,
+			      devlink_resource_occ_get_t *occ_get)
+{
+	struct devlink_resource_size_params p;
+
+	if (!size)
+		return;
+	devlink_resource_size_params_init(&p, size, size, 1,
+					  DEVLINK_RESOURCE_UNIT_ENTRY);
+	if (devl_resource_register(npu->devlink, name, size, id,
+				   DEVLINK_RESOURCE_ID_PARENT_TOP, &p))
+		return;
+	devl_resource_occ_get_register(npu->devlink, id, occ_get, npu);
+}
+
 static const struct devlink_ops libranpu_devlink_ops = {
 	.info_get = libranpu_info_get,
 };
@@ -61,10 +103,19 @@ void libranpu_devlink_free(struct libranpu *npu)
 
 void libranpu_devlink_register(struct libranpu *npu)
 {
-	devlink_register(npu->devlink);
+	devl_lock(npu->devlink);
+	libranpu_resource(npu, "rx_buffers", npu->pool.cpu ? npu->pool.ids : 0,
+			  LIBRANPU_RES_RX_BUFFERS, libranpu_rx_buffers_occ);
+	libranpu_resource(npu, "tx_tokens", npu->tx_tokens,
+			  LIBRANPU_RES_TX_TOKENS, libranpu_tx_tokens_occ);
+	devl_register(npu->devlink);
+	devl_unlock(npu->devlink);
 }
 
 void libranpu_devlink_unregister(struct libranpu *npu)
 {
-	devlink_unregister(npu->devlink);
+	devl_lock(npu->devlink);
+	devl_unregister(npu->devlink);
+	devl_resources_unregister(npu->devlink);
+	devl_unlock(npu->devlink);
 }

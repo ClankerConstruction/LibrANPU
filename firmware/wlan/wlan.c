@@ -424,6 +424,11 @@ static int wlan_get_stats(struct cmd_ctx *c)
 	if (w->radio || w->page > 1)
 		return -EINVAL;
 	if (w->page) {
+		struct wlan_lan *l = &wlan_radio.lan;
+
+		/* the tx task owns the pool: a snapshot */
+		wlan_radio.txstats.lan_tokens_used = l->tokens ?
+			l->tokens - READ_ONCE(l->free.top) : 0;
 		memcpy(c->rsp, &wlan_radio.txstats, sizeof(wlan_radio.txstats));
 		c->rsp_len = sizeof(wlan_radio.txstats);
 		return 0;

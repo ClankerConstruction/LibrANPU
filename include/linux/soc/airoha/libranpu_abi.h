@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		5
+#define LIBRANPU_ABI_MINOR		6
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -443,6 +443,7 @@ struct libranpu_wlan_tx_stats {
 	__le32 lan_bad;			/* bad band or length: dropped */
 	__le32 lan_aqm_drops;		/* dropped for a standing in-chip delay */
 	__le32 lan_limit_drops;		/* dropped at a station's hard limit */
+	__le32 lan_tokens_used;		/* NPU tokens not free: rings and chip */
 };
 
 #define LIBRANPU_RX_BUF_SIZE		2048

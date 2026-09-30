@@ -1191,6 +1191,7 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	      wt.txfree_other == chip.others &&
 	      wt.lan_frames[0] + wt.lan_frames[1] == chip.lan_taken &&
 	      wt.txfree_npu == chip.lan_taken && !wt.lan_bad &&
+	      wt.lan_tokens_used == 2 * LAN_RING &&
 	      (nheld ? wt.lan_limit_drops > 0 : wt.lan_no_token > 0),
 	      "tx stats %u %u full %u %u rewrite %u, tx free %u %u host %u bad %u full %u, lan %u %u npu %u no token %u ring full %u bad %u",
 	      wt.descs[0], wt.descs[1], wt.full[0], wt.full[1], wt.rewrite,

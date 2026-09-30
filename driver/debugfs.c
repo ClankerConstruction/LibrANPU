@@ -305,7 +305,7 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 		"txfree_events0", "txfree_events1", "txfree_host", "txfree_npu",
 		"txfree_bad", "txfree_other", "txfree_full", "lan_frames0",
 		"lan_frames1", "lan_no_token", "lan_ring_full", "lan_bad",
-		"lan_aqm_drops", "lan_limit_drops",
+		"lan_aqm_drops", "lan_limit_drops", "lan_tokens_used",
 	};
 	struct libranpu_wlan_tx_stats tx;
 	const __le32 *tv = (const __le32 *)&tx;
