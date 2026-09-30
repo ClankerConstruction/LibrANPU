@@ -94,7 +94,7 @@ int lan_attach(struct wlan_radio *r, u32 base, u32 tokens)
 	for (i = 0; i < AQM_STAS; i++)
 		aqm_sta_init(&l->sta[i]);
 	for (t = 0; t < tokens; t++)
-		l->tok_sta[t] = AQM_NONE;
+		l->tok_sta[t] = AQM_NOT_SENT;
 	aqm_defaults(&r->aqm, plat_cpu_mhz());
 
 	l->pool = (uintptr_t)pool;
@@ -156,6 +156,7 @@ void lan_stop(struct wlan_radio *r)
 		REG32(FE_TDMA_GLO_CFG) &= ~GLO_RX_EN;
 }
 
+/* a report for a token the chip does not hold would free it twice */
 bool lan_token_free(struct wlan_radio *r, u32 id)
 {
 	struct wlan_lan *l = &r->lan;
@@ -164,6 +165,11 @@ bool lan_token_free(struct wlan_radio *r, u32 id)
 	if (id >= l->tokens)
 		return false;
 	w = l->tok_sta[id];
+	if (w == AQM_NOT_SENT) {
+		r->txstats.txfree_stale++;
+		return true;
+	}
+	l->tok_sta[id] = AQM_NOT_SENT;
 	if (w != AQM_NONE)
 		aqm_done(&l->sta[w], id, cycles());
 	pool_put(&l->free, id, 0, l->tokens - 1);
