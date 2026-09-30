@@ -106,16 +106,18 @@ static void txfree_ring(struct wlan_radio *r,
 	r->txfree_arm[d->band] = FIELD_PREP(WLAN_RX_DESC_LEN, d->buf64 * 64u);
 }
 
+/* the attach's ring table, read from the host: control only */
+static struct libranpu_wlan_ring att_ring[LIBRANPU_WLAN_RINGS];
+
 /* the rings of one link in one block, and the link's window over it */
 static int place_link(struct wlan_radio *r,
-		      const struct libranpu_wlan_attach *a, u32 link,
-		      struct libranpu_wlan_attach_rsp *rsp)
+		      const struct libranpu_wlan_attach *a, u32 link)
 {
 	u32 i, total = 0, at;
 	u8 *blk;
 
 	for (i = 0; i < a->nrings; i++) {
-		const struct libranpu_wlan_ring *d = &a->ring[i];
+		const struct libranpu_wlan_ring *d = &att_ring[i];
 
 		if ((d->kind == LIBRANPU_RING_RX_DATA ||
 		     d->kind == LIBRANPU_RING_RXDMAD_C ||
@@ -130,7 +132,7 @@ static int place_link(struct wlan_radio *r,
 		return -ENOSPC;
 
 	for (i = 0, at = (uintptr_t)blk; i < a->nrings; i++) {
-		const struct libranpu_wlan_ring *d = &a->ring[i];
+		struct libranpu_wlan_ring *d = &att_ring[i];
 		struct wlan_ring *w;
 
 		if (d->link != link)
@@ -150,7 +152,7 @@ static int place_link(struct wlan_radio *r,
 		w->entries = d->entries;
 		w->band = d->band;
 		w->link = link;
-		rsp->ring_base[i] = w->bus;
+		d->base = w->bus;
 		at += chip_bytes(d);
 	}
 	plat_pcie_window(a->link_win[link], wlan_bus((uintptr_t)blk),
@@ -185,8 +187,8 @@ static void fill_rings(struct wlan_radio *r)
 static int wlan_attach(struct cmd_ctx *c)
 {
 	const struct libranpu_wlan_attach *a = (const void *)c->req;
-	struct libranpu_wlan_attach_rsp *rsp = (void *)c->rsp;
 	struct wlan_radio *r = &wlan_radio;
+	volatile struct libranpu_wlan_ring *table;
 	const volatile u32 *held = NULL;
 	u32 i, need = 0;
 	u16 *stack;
@@ -208,13 +210,19 @@ static int wlan_attach(struct cmd_ctx *c)
 		if (!held)
 			return -EINVAL;
 	}
+	table = plat_host_ptr(a->ring_table, a->nrings * sizeof(*table));
+	if (!table)
+		return -EINVAL;
+	/* one read of the table; the bases go back at the end */
+	for (i = 0; i < a->nrings; i++)
+		copy_words((volatile u32 *)&att_ring[i],
+			   (const volatile u32 *)&table[i], sizeof(att_ring[i]));
 
-	memset(rsp, 0, sizeof(*rsp));
 	i = r->epoch;
 	memset(r, 0, sizeof(*r));
 	r->epoch = i;
 	for (i = 0; i < a->nrings; i++) {
-		const struct libranpu_wlan_ring *d = &a->ring[i];
+		const struct libranpu_wlan_ring *d = &att_ring[i];
 
 		err = check_ring(a, d);
 		if (err)
@@ -263,9 +271,9 @@ static int wlan_attach(struct cmd_ctx *c)
 			err = -ENOSPC;
 	}
 	if (!err)
-		err = place_link(r, a, 0, rsp);
+		err = place_link(r, a, 0);
 	if (!err)
-		err = place_link(r, a, 1, rsp);
+		err = place_link(r, a, 1);
 	if (!err)
 		err = ppe_attach(r);
 	if (!err)
@@ -287,10 +295,11 @@ static int wlan_attach(struct cmd_ctx *c)
 	spsc_init(r->ppe2host, WLAN_RX2HOST, 8);
 	fill_rings(r);
 
+	for (i = 0; i < a->nrings; i++)
+		table[i].base = att_ring[i].base;
 	r->epoch++;
 	wmb();
 	WRITE_ONCE(r->state, WLAN_ATTACHED);
-	c->rsp_len = sizeof(*rsp);
 	return 0;
 }
 
@@ -497,7 +506,7 @@ static int wlan_sta_q(struct cmd_ctx *c)
 }
 
 static const struct cmd_handler wlan_handlers[] = {
-	{ LIBRANPU_WLAN_ATTACH, offsetof(struct libranpu_wlan_attach, ring),
+	{ LIBRANPU_WLAN_ATTACH, sizeof(struct libranpu_wlan_attach),
 	  wlan_attach },
 	{ LIBRANPU_WLAN_START, sizeof(struct libranpu_wlan_ctl), wlan_start },
 	{ LIBRANPU_WLAN_STOP, sizeof(struct libranpu_wlan_ctl), wlan_stop },

@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		6
+#define LIBRANPU_ABI_MINOR		7
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -326,7 +326,7 @@ enum libranpu_ring_kind {
 	LIBRANPU_RING_HOST_TXFREE,	/* host adaptor rx ring: tx status */
 };
 
-#define LIBRANPU_WLAN_RINGS		12
+#define LIBRANPU_WLAN_RINGS		32
 
 /*
  * Chip rings: regs is the bus address of the ring's register block,
@@ -372,12 +372,11 @@ struct libranpu_wlan_attach {
 	__le32 tx_pool_base;
 	__le16 npu_tokens;
 	__le16 rsv2;
-	struct libranpu_wlan_ring ring[LIBRANPU_WLAN_RINGS];
-};
-
-/* bus address of each chip ring the NPU placed, 0 for host rings */
-struct libranpu_wlan_attach_rsp {
-	__le32 ring_base[LIBRANPU_WLAN_RINGS];
+	/*
+	 * Host memory with nrings ring entries; into each chip ring's base
+	 * the NPU writes the bus address it placed the ring at.
+	 */
+	__le32 ring_table;
 };
 
 #define LIBRANPU_WLAN_RX		BIT(0)

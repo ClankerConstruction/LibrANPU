@@ -59,6 +59,14 @@ int libranpu_wlan_init(struct libranpu *npu)
 
 	spin_lock_init(&npu->ha_lock);
 	libranpu_tx_pool_init(npu);
+	npu->ring_tbl = dmam_alloc_coherent(npu->dev, LIBRANPU_WLAN_RINGS *
+					    sizeof(*npu->ring_tbl),
+					    &npu->ring_tbl_dma, GFP_KERNEL);
+	if (!npu->ring_tbl)
+		return -ENOMEM;
+	if (npu->ring_tbl_dma < NPU_DRAM_WIN_START ||
+	    npu->ring_tbl_dma >= NPU_DRAM_WIN_END)
+		npu->ring_tbl = NULL;
 	if (of_reserved_mem_region_to_resource_byname(npu->dev->of_node,
 						      "rx-pkt", &res))
 		return 0;
@@ -125,22 +133,25 @@ static int wlan_ctl(struct libranpu *npu, u16 op, u8 radio, u8 dir,
 
 int libranpu_wlan_attach(struct libranpu *npu,
 			 struct libranpu_wlan_attach *req,
-			 struct libranpu_wlan_attach_rsp *rsp)
+			 struct libranpu_wlan_ring *rings, u32 nrings)
 {
 	u32 i, ring_ids = 0;
 	bool tx = false;
-	u16 len = sizeof(*rsp);
+	int err;
 
 	if (!(le32_to_cpu(npu->caps.services) & LIBRANPU_SVC_F_WLAN))
 		return -EOPNOTSUPP;
-	if (!npu->pool.cpu || req->nrings > LIBRANPU_WLAN_RINGS)
+	if (!npu->pool.cpu || !npu->ring_tbl || nrings > LIBRANPU_WLAN_RINGS)
 		return -EINVAL;
 
-	for (i = 0; i < req->nrings; i++) {
-		if (req->ring[i].kind == LIBRANPU_RING_RX_DATA)
-			ring_ids += le16_to_cpu(req->ring[i].entries);
-		tx |= req->ring[i].kind == LIBRANPU_RING_TX_DATA;
+	for (i = 0; i < nrings; i++) {
+		if (rings[i].kind == LIBRANPU_RING_RX_DATA)
+			ring_ids += le16_to_cpu(rings[i].entries);
+		tx |= rings[i].kind == LIBRANPU_RING_TX_DATA;
 	}
+	memcpy(npu->ring_tbl, rings, nrings * sizeof(*rings));
+	req->nrings = nrings;
+	req->ring_table = cpu_to_le32(npu->ring_tbl_dma);
 	if (tx && npu->tx_tokens) {
 		req->tx_pool_base = cpu_to_le32(npu->tx_pool);
 		req->npu_tokens = cpu_to_le16(npu->tx_tokens);
@@ -153,8 +164,14 @@ int libranpu_wlan_attach(struct libranpu *npu,
 	req->rx_held = cpu_to_le32(libranpu_rxb_attach(npu, ring_ids));
 	if (READ_ONCE(npu->force_host))
 		req->flags |= cpu_to_le32(LIBRANPU_WLAN_F_FORCE_HOST);
-	return libranpu_cmd(npu, LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_ATTACH,
-			    req, sizeof(*req), rsp, &len);
+	err = libranpu_cmd(npu, LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_ATTACH,
+			   req, sizeof(*req), NULL, NULL);
+	if (err)
+		return err;
+	/* the NPU wrote where it placed each chip ring */
+	for (i = 0; i < nrings; i++)
+		rings[i].base = READ_ONCE(npu->ring_tbl[i].base);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(libranpu_wlan_attach);
 

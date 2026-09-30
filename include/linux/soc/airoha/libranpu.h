@@ -64,10 +64,13 @@ u32 libranpu_rx_reclaim(struct libranpu *npu, u32 *ids, u32 max);
  */
 u32 libranpu_wlan_tx_tokens(struct libranpu *npu);
 
-/* fills in the rx pool fields of req, and the tx ones with tx rings */
+/*
+ * Fills in the rx pool fields of req, and the tx ones with tx rings.
+ * Each chip ring the NPU places gets its bus address in rings[].base.
+ */
 int libranpu_wlan_attach(struct libranpu *npu,
 			 struct libranpu_wlan_attach *req,
-			 struct libranpu_wlan_attach_rsp *rsp);
+			 struct libranpu_wlan_ring *rings, u32 nrings);
 int libranpu_wlan_start(struct libranpu *npu, u8 radio, u8 dir);
 int libranpu_wlan_stop(struct libranpu *npu, u8 radio,
 		       struct libranpu_wlan_audit *audit);

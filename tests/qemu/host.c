@@ -467,6 +467,7 @@ static void test_reset(void)
 #define TX_CTRL		0x004C4048	/* 76-byte TXWI, 72-byte head */
 #define TXF_ENTRIES	64		/* chip tx free rings */
 #define HTXF_BASE	0x89070000	/* tx free records to the host */
+#define RING_TBL	0x89079000	/* the attach's ring table */
 #define TXFD_BASE	0x89072000	/* host tx free rings, per band */
 #define TXFB_BASE	0x8C000000	/* their 2 KB buffers */
 #define TXF_BUF64	27		/* 1728 bytes armed */
@@ -951,7 +952,7 @@ static void host_ret_held(u32 n)
 static void wlan_session(u32 frames, bool force, u32 nheld)
 {
 	struct libranpu_wlan_attach a;
-	struct libranpu_wlan_attach_rsp rsp;
+	volatile struct libranpu_wlan_ring *tbl = (void *)RING_TBL;
 	struct libranpu_wlan_audit au;
 	struct libranpu_wlan_stats ws;
 	struct libranpu_wlan_tx_stats wt;
@@ -991,30 +992,30 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	a.tx_pool_base = LAN_POOL;
 	a.npu_tokens = LAN_TOKENS;
 	a.flags = force ? LIBRANPU_WLAN_F_FORCE_HOST : 0;
-	ring_desc(&a.ring[0], LIBRANPU_RING_RX_DATA, 0, 0, RX_ENTRIES, 16,
+	ring_desc((void *)&tbl[0], LIBRANPU_RING_RX_DATA, 0, 0, RX_ENTRIES, 16,
 		  regs_of(0), 0);
-	ring_desc(&a.ring[1], LIBRANPU_RING_RX_DATA, 1, 1, RX_ENTRIES, 16,
+	ring_desc((void *)&tbl[1], LIBRANPU_RING_RX_DATA, 1, 1, RX_ENTRIES, 16,
 		  regs_of(1), 0);
-	ring_desc(&a.ring[2], LIBRANPU_RING_RXDMAD_C, 0, 0, RXD_ENTRIES, 16,
+	ring_desc((void *)&tbl[2], LIBRANPU_RING_RXDMAD_C, 0, 0, RXD_ENTRIES, 16,
 		  regs_of(2), 0);
-	ring_desc(&a.ring[3], LIBRANPU_RING_HOST_RX, 0, 0, HRX_ENTRIES, 24, 0,
+	ring_desc((void *)&tbl[3], LIBRANPU_RING_HOST_RX, 0, 0, HRX_ENTRIES, 24, 0,
 		  HRX_BASE);
-	ring_desc(&a.ring[4], LIBRANPU_RING_HOST_RET, 0, 0, HRET_ENTRIES, 4, 4,
+	ring_desc((void *)&tbl[4], LIBRANPU_RING_HOST_RET, 0, 0, HRET_ENTRIES, 4, 4,
 		  HRET_BASE);
 	/* band 1 tx on link 0, as on the two-link chip */
-	ring_desc(&a.ring[5], LIBRANPU_RING_TX_DATA, 0, 0, TX_ENTRIES, 16,
+	ring_desc((void *)&tbl[5], LIBRANPU_RING_TX_DATA, 0, 0, TX_ENTRIES, 16,
 		  regs_of(3), 0);
-	ring_desc(&a.ring[6], LIBRANPU_RING_TX_DATA, 1, 0, TX_ENTRIES, 16,
+	ring_desc((void *)&tbl[6], LIBRANPU_RING_TX_DATA, 1, 0, TX_ENTRIES, 16,
 		  regs_of(4), 0);
-	ring_desc(&a.ring[7], LIBRANPU_RING_HOST_TX, 0, 0, HTX_ENTRIES, 16, 5,
+	ring_desc((void *)&tbl[7], LIBRANPU_RING_HOST_TX, 0, 0, HTX_ENTRIES, 16, 5,
 		  HTX_BASE);
-	ring_desc(&a.ring[8], LIBRANPU_RING_HOST_TX, 1, 0, HTX_ENTRIES, 16, 6,
+	ring_desc((void *)&tbl[8], LIBRANPU_RING_HOST_TX, 1, 0, HTX_ENTRIES, 16, 6,
 		  HTX_BASE + 0x4000);
-	ring_desc(&a.ring[9], LIBRANPU_RING_TXFREE, 0, 0, TXF_ENTRIES, 16,
+	ring_desc((void *)&tbl[9], LIBRANPU_RING_TXFREE, 0, 0, TXF_ENTRIES, 16,
 		  regs_of(5), TXFD_BASE);
-	ring_desc(&a.ring[10], LIBRANPU_RING_TXFREE, 1, 0, TXF_ENTRIES, 16,
+	ring_desc((void *)&tbl[10], LIBRANPU_RING_TXFREE, 1, 0, TXF_ENTRIES, 16,
 		  regs_of(6), TXFD_BASE + 16 * TXF_ENTRIES);
-	a.ring[9].buf64 = a.ring[10].buf64 = TXF_BUF64;
+	tbl[9].buf64 = tbl[10].buf64 = TXF_BUF64;
 	/*
 	 * The driver armed its tx free rings but one slot, at its cpu
 	 * index; the chip is part way in.
@@ -1031,27 +1032,29 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 		REG32(regs_of(5 + i) + 8) = TXF_DIDX0 - 1;
 		REG32(regs_of(5 + i) + 0xC) = TXF_DIDX0;
 	}
-	ring_desc(&a.ring[11], LIBRANPU_RING_HOST_TXFREE, 0, 0, HTXF_ENTRIES,
+	ring_desc((void *)&tbl[11], LIBRANPU_RING_HOST_TXFREE, 0, 0, HTXF_ENTRIES,
 		  8, 2, HTXF_BASE);
 
+	a.ring_table = RING_TBL;
 	st = cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_ATTACH, &a, sizeof(a),
-		 &rsp, NULL);
+		 NULL, NULL);
 	CHECK(st == 0, "attach %d", (int)st);
 	if (st)
 		return;
-	CHECK(rsp.ring_base[0] && rsp.ring_base[1] && rsp.ring_base[2] &&
-	      !rsp.ring_base[3], "bases %x %x %x", rsp.ring_base[0],
-	      rsp.ring_base[1], rsp.ring_base[2]);
+	CHECK(tbl[0].base && tbl[1].base && tbl[2].base &&
+	      tbl[3].base == HRX_BASE, "bases %x %x %x", tbl[0].base,
+	      tbl[1].base, tbl[2].base);
 	/* QEMU: bus address is the RAM address below 512 MB */
-	chip.rx_desc[0] = rsp.ring_base[0] | 0x80000000;
-	chip.rx_desc[1] = rsp.ring_base[1] | 0x80000000;
-	chip.rxd_desc = rsp.ring_base[2] | 0x80000000;
-	chip.tx_desc[0] = rsp.ring_base[5] | 0x80000000;
-	chip.tx_desc[1] = rsp.ring_base[6] | 0x80000000;
+	chip.rx_desc[0] = tbl[0].base | 0x80000000;
+	chip.rx_desc[1] = tbl[1].base | 0x80000000;
+	chip.rxd_desc = tbl[2].base | 0x80000000;
+	chip.tx_desc[0] = tbl[5].base | 0x80000000;
+	chip.tx_desc[1] = tbl[6].base | 0x80000000;
 	chip.txf_desc[0] = TXFD_BASE;
 	chip.txf_desc[1] = TXFD_BASE + 16 * TXF_ENTRIES;
 	chip.txf_idx[0] = chip.txf_idx[1] = TXF_DIDX0;
-	CHECK(!rsp.ring_base[9] && !rsp.ring_base[10], "tx free placed");
+	CHECK(tbl[9].base == TXFD_BASE &&
+	      tbl[10].base == TXFD_BASE + 16 * TXF_ENTRIES, "tx free placed");
 	chip.npend[0] = chip.npend[1] = 0;
 	chip.reports[0] = chip.reports[1] = 0;
 	htxf_cons = htxf_tok[0] = htxf_tok[1] = 0;
@@ -1064,8 +1067,8 @@ static void wlan_session(u32 frames, bool force, u32 nheld)
 	lan_sent = 0;
 	chip.tx_taken = chip.tx_bad = 0;
 	/* link 0 on window 1: its span covers rx band 0 and RXDMAD_C */
-	CHECK(REG32(NPU_MMIO_BASE + 0x13008) <= rsp.ring_base[0] &&
-	      REG32(NPU_MMIO_BASE + 0x1300c) >= rsp.ring_base[2] + 16 * RXD_ENTRIES,
+	CHECK(REG32(NPU_MMIO_BASE + 0x13008) <= tbl[0].base &&
+	      REG32(NPU_MMIO_BASE + 0x1300c) >= tbl[2].base + 16 * RXD_ENTRIES,
 	      "window 1 %x-%x", REG32(NPU_MMIO_BASE + 0x13008),
 	      REG32(NPU_MMIO_BASE + 0x1300c));
 

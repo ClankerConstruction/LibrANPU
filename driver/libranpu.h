@@ -103,6 +103,9 @@ struct libranpu {
 	struct libranpu_rx_pool pool;
 	struct libranpu_rxb rxb;
 	bool force_host;		/* every rx frame to the host */
+	/* the attach's ring table, coherent: the NPU writes the bases */
+	struct libranpu_wlan_ring *ring_tbl;
+	dma_addr_t ring_tbl_dma;
 	phys_addr_t tx_pool;		/* LAN to WiFi token buffers */
 	u32 tx_tokens;
 	/* protects the host adaptor line masks */
