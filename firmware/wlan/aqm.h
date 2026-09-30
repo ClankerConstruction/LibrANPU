@@ -9,7 +9,6 @@
 #include "fw/types.h"
 
 #define AQM_STAS		1024	/* stations by wcid; others unmanaged */
-#define AQM_INTERVAL_MAX_US	150000
 #define AQM_NONE		0xFFFF
 #define AQM_NOT_SENT		0xFFFE	/* a token the chip does not hold */
 

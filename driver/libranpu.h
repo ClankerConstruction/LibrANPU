@@ -103,6 +103,9 @@ struct libranpu {
 	struct libranpu_rx_pool pool;
 	struct libranpu_rxb rxb;
 	bool force_host;		/* every rx frame to the host */
+	/* the per-station limit, sent again after each attach */
+	struct mutex aqm_lock;
+	struct libranpu_wlan_aqm aqm;
 	/* the attach's ring table, coherent: the NPU writes the bases */
 	struct libranpu_wlan_ring *ring_tbl;
 	dma_addr_t ring_tbl_dma;
@@ -112,6 +115,7 @@ struct libranpu {
 	spinlock_t ha_lock;
 	struct blocking_notifier_head notifier;
 	struct devlink *devlink;
+	bool dl_params;
 	struct dentry *debugfs;
 	u16 dbg_wcid;			/* debugfs wlan_sta_q */
 	ktime_t boot_time;
@@ -134,6 +138,8 @@ irqreturn_t libranpu_mbox_thread(int irq, void *data);
 
 /* wlan.c */
 int libranpu_wlan_init(struct libranpu *npu);
+int libranpu_wlan_aqm_set(struct libranpu *npu,
+			  const struct libranpu_wlan_aqm *q);
 void libranpu_wlan_deinit(struct libranpu *npu);
 
 /* rxbuf.c */

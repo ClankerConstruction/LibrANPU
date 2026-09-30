@@ -340,70 +340,6 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 }
 DEFINE_SHOW_ATTRIBUTE(wlan_stats);
 
-/* bench switch: 1 sends every radio 0 frame to the host, not the PPE */
-static int wlan_force_host_set(void *data, u64 val)
-{
-	return libranpu_wlan_force_host(data, 0, !!val);
-}
-DEFINE_DEBUGFS_ATTRIBUTE(wlan_force_host_fops, NULL, wlan_force_host_set,
-			 "%llu\n");
-
-/*
- * Bench: the per-station limit of radio 0. Write "on limit target
- * delay_us interval_us min_q small"; read gives the same order.
- */
-static int wlan_aqm_show(struct seq_file *s, void *data)
-{
-	struct libranpu_wlan_aqm q = {}, o = {};
-	u16 len = sizeof(o);
-	int err;
-
-	err = libranpu_cmd(s->private, LIBRANPU_SVC_WLAN,
-			   LIBRANPU_WLAN_AQM, &q, sizeof(q), &o, &len);
-	if (err)
-		return err;
-	seq_printf(s, "%u %u %u %u %u %u %u\n", o.on, le32_to_cpu(o.limit),
-		   le32_to_cpu(o.target), le32_to_cpu(o.delay_us),
-		   le32_to_cpu(o.interval_us), le32_to_cpu(o.min_q),
-		   le32_to_cpu(o.small));
-	return 0;
-}
-
-static int wlan_aqm_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, wlan_aqm_show, inode->i_private);
-}
-
-static ssize_t wlan_aqm_write(struct file *file, const char __user *ubuf,
-			      size_t count, loff_t *ppos)
-{
-	struct libranpu *npu = ((struct seq_file *)file->private_data)->private;
-	struct libranpu_wlan_aqm q = { .set = 1 }, o;
-	u32 on, v[6];
-	u16 len = sizeof(o);
-	char buf[96];
-	int err;
-
-	if (count >= sizeof(buf))
-		return -EINVAL;
-	if (copy_from_user(buf, ubuf, count))
-		return -EFAULT;
-	buf[count] = 0;
-	if (sscanf(buf, "%u %u %u %u %u %u %u", &on, &v[0], &v[1], &v[2],
-		   &v[3], &v[4], &v[5]) != 7)
-		return -EINVAL;
-	q.on = !!on;
-	q.limit = cpu_to_le32(v[0]);
-	q.target = cpu_to_le32(v[1]);
-	q.delay_us = cpu_to_le32(v[2]);
-	q.interval_us = cpu_to_le32(v[3]);
-	q.min_q = cpu_to_le32(v[4]);
-	q.small = cpu_to_le32(v[5]);
-	err = libranpu_cmd(npu, LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_AQM,
-			   &q, sizeof(q), &o, &len);
-	return err ?: count;
-}
-
 /* bench: write a wcid, read its frames in the chip and in-chip delay */
 static int wlan_sta_q_set(void *data, u64 val)
 {
@@ -455,14 +391,6 @@ static const struct file_operations wlan_sta_q_fops = {
 	.open = wlan_sta_q_open,
 	.read = seq_read,
 	.write = wlan_sta_q_write,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-static const struct file_operations wlan_aqm_fops = {
-	.open = wlan_aqm_open,
-	.read = seq_read,
-	.write = wlan_aqm_write,
 	.llseek = seq_lseek,
 	.release = single_release,
 };
@@ -519,9 +447,6 @@ void libranpu_debugfs_init(struct libranpu *npu)
 			    &dbg_block_fops);
 	debugfs_create_file("wlan_stats", 0400, npu->debugfs, npu,
 			    &wlan_stats_fops);
-	debugfs_create_file_unsafe("wlan_force_host", 0200, npu->debugfs, npu,
-				   &wlan_force_host_fops);
-	debugfs_create_file("wlan_aqm", 0600, npu->debugfs, npu, &wlan_aqm_fops);
 	debugfs_create_file("wlan_sta_q", 0600, npu->debugfs, npu,
 			    &wlan_sta_q_fops);
 	/* bench switch: 0 copies every rx frame */

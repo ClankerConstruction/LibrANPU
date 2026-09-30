@@ -4,7 +4,7 @@
 |---|---|
 | `core.c` | DT match, image checks, load, boot handshake, halt, consumer lookup |
 | `cmd.c` | command slots, event ring drain, fault words |
-| `devlink.c` | `devlink dev info`: ASIC, firmware, ABI, build id |
+| `devlink.c` | `devlink dev info` (ASIC, firmware, ABI, build id), resources, params |
 | `debugfs.c` | bench only: `status`, `dbg_block`, `probe`, `cmd_bench` |
 
 ## Probe
@@ -52,8 +52,14 @@ Rx buffers (`driver/rxbuf.c`): `libranpu_rx_skb` (a frame's buffers as one skb),
 
 debugfs: `status`, `dbg_block`, `probe`, `cmd_bench`, `ha_probe`, `wlan_stats` (NPU counters, then
 `host_lent_frames`, `host_copied_frames`, `host_reclaimed`, `host_lent_now N of MAX`),
-`wlan_force_host`, `wlan_rx_lend`, `wlan_aqm` (`on limit target delay_us interval_us min_q small`),
-`wlan_sta_q` (write a wcid, read its frames and delay in the chip) (bench switches; devlink later).
+`wlan_rx_lend`, `wlan_sta_q` (write a wcid, read its frames and delay in the chip) (bench only).
+
+devlink (`platform/1e900000.npu`): resources `rx_buffers` (occupancy: lent to the stack) and
+`tx_tokens` (occupancy: under the frame engine's rings and in the chip); runtime params
+`wlan_force_host` (every radio 0 frame to the host, kept across attaches) and the per-station limit
+`aqm_enable`, `aqm_limit`, `aqm_target`, `aqm_delay_us`, `aqm_interval_us` (1..150000, not below
+`aqm_delay_us`), `aqm_min_frames`, `aqm_small_bytes`. The driver keeps them and sends them again
+after each attach, which starts from the defaults (on, 8192, 0, 10000, 100000, 64, 256).
 
 ## Zero-copy rx
 

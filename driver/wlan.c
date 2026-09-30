@@ -58,6 +58,15 @@ int libranpu_wlan_init(struct libranpu *npu)
 	u32 ids;
 
 	spin_lock_init(&npu->ha_lock);
+	mutex_init(&npu->aqm_lock);
+	npu->aqm = (struct libranpu_wlan_aqm){
+		.on = 1,
+		.limit = cpu_to_le32(8192),
+		.delay_us = cpu_to_le32(10000),
+		.interval_us = cpu_to_le32(100000),
+		.min_q = cpu_to_le32(64),
+		.small = cpu_to_le32(256),
+	};
 	libranpu_tx_pool_init(npu);
 	npu->ring_tbl = dmam_alloc_coherent(npu->dev, LIBRANPU_WLAN_RINGS *
 					    sizeof(*npu->ring_tbl),
@@ -171,9 +180,26 @@ int libranpu_wlan_attach(struct libranpu *npu,
 	/* the NPU wrote where it placed each chip ring */
 	for (i = 0; i < nrings; i++)
 		rings[i].base = READ_ONCE(npu->ring_tbl[i].base);
+
+	/* an attach starts from the defaults */
+	mutex_lock(&npu->aqm_lock);
+	if (libranpu_wlan_aqm_set(npu, &npu->aqm))
+		dev_warn(npu->dev, "per-station limit not restored\n");
+	mutex_unlock(&npu->aqm_lock);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(libranpu_wlan_attach);
+
+int libranpu_wlan_aqm_set(struct libranpu *npu,
+			  const struct libranpu_wlan_aqm *q)
+{
+	struct libranpu_wlan_aqm req = *q, rsp;
+	u16 len = sizeof(rsp);
+
+	req.set = 1;
+	return libranpu_cmd(npu, LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_AQM,
+			    &req, sizeof(req), &rsp, &len);
+}
 
 int libranpu_wlan_start(struct libranpu *npu, u8 radio, u8 dir)
 {

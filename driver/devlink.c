@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * devlink: firmware and ABI versions of the running image, and rx
- * buffer and tx token occupancy as resources.
+ * devlink: firmware and ABI versions of the running image, rx buffer
+ * and tx token occupancy as resources, and the WLAN knobs as params.
  */
 
 #include <net/devlink.h>
@@ -79,6 +79,109 @@ static void libranpu_resource(struct libranpu *npu, const char *name,
 	devl_resource_occ_get_register(npu->devlink, id, occ_get, npu);
 }
 
+enum {
+	LIBRANPU_PARAM_FORCE_HOST = DEVLINK_PARAM_GENERIC_ID_MAX + 1,
+	LIBRANPU_PARAM_AQM_ENABLE,
+	LIBRANPU_PARAM_AQM_LIMIT,
+	LIBRANPU_PARAM_AQM_TARGET,
+	LIBRANPU_PARAM_AQM_DELAY_US,
+	LIBRANPU_PARAM_AQM_INTERVAL_US,
+	LIBRANPU_PARAM_AQM_MIN_FRAMES,
+	LIBRANPU_PARAM_AQM_SMALL_BYTES,
+};
+
+static __le32 *libranpu_aqm_field(struct libranpu_wlan_aqm *q, u32 id)
+{
+	switch (id) {
+	case LIBRANPU_PARAM_AQM_LIMIT:
+		return &q->limit;
+	case LIBRANPU_PARAM_AQM_TARGET:
+		return &q->target;
+	case LIBRANPU_PARAM_AQM_DELAY_US:
+		return &q->delay_us;
+	case LIBRANPU_PARAM_AQM_INTERVAL_US:
+		return &q->interval_us;
+	case LIBRANPU_PARAM_AQM_MIN_FRAMES:
+		return &q->min_q;
+	default:
+		return &q->small;
+	}
+}
+
+static int libranpu_param_get(struct devlink *dl, u32 id,
+			      struct devlink_param_gset_ctx *ctx)
+{
+	struct libranpu *npu = devlink_priv(dl);
+
+	mutex_lock(&npu->aqm_lock);
+	if (id == LIBRANPU_PARAM_FORCE_HOST)
+		ctx->val.vbool = READ_ONCE(npu->force_host);
+	else if (id == LIBRANPU_PARAM_AQM_ENABLE)
+		ctx->val.vbool = npu->aqm.on;
+	else
+		ctx->val.vu32 = le32_to_cpu(*libranpu_aqm_field(&npu->aqm, id));
+	mutex_unlock(&npu->aqm_lock);
+	return 0;
+}
+
+static int libranpu_param_set(struct devlink *dl, u32 id,
+			      struct devlink_param_gset_ctx *ctx,
+			      struct netlink_ext_ack *extack)
+{
+	struct libranpu *npu = devlink_priv(dl);
+	struct libranpu_wlan_aqm q;
+	int err;
+
+	if (id == LIBRANPU_PARAM_FORCE_HOST)
+		return libranpu_wlan_force_host(npu, 0, ctx->val.vbool);
+
+	mutex_lock(&npu->aqm_lock);
+	q = npu->aqm;
+	if (id == LIBRANPU_PARAM_AQM_ENABLE)
+		q.on = ctx->val.vbool;
+	else
+		*libranpu_aqm_field(&q, id) = cpu_to_le32(ctx->val.vu32);
+	if (le32_to_cpu(q.delay_us) > le32_to_cpu(q.interval_us)) {
+		NL_SET_ERR_MSG_MOD(extack, "aqm_delay_us above aqm_interval_us");
+		err = -EINVAL;
+	} else {
+		err = libranpu_wlan_aqm_set(npu, &q);
+	}
+	if (!err)
+		npu->aqm = q;
+	mutex_unlock(&npu->aqm_lock);
+	return err;
+}
+
+static int libranpu_interval_validate(struct devlink *dl, u32 id,
+				      union devlink_param_value val,
+				      struct netlink_ext_ack *extack)
+{
+	if (val.vu32 && val.vu32 <= LIBRANPU_AQM_INTERVAL_MAX_US)
+		return 0;
+	NL_SET_ERR_MSG_MOD(extack, "aqm_interval_us out of 1..150000");
+	return -EINVAL;
+}
+
+#define LIBRANPU_PARAM(_id, _name, _type, _validate)			\
+	DEVLINK_PARAM_DRIVER(LIBRANPU_PARAM_##_id, _name,		\
+			     DEVLINK_PARAM_TYPE_##_type,		\
+			     BIT(DEVLINK_PARAM_CMODE_RUNTIME),		\
+			     libranpu_param_get, libranpu_param_set,		\
+			     _validate)
+
+static const struct devlink_param libranpu_params[] = {
+	LIBRANPU_PARAM(FORCE_HOST, "wlan_force_host", BOOL, NULL),
+	LIBRANPU_PARAM(AQM_ENABLE, "aqm_enable", BOOL, NULL),
+	LIBRANPU_PARAM(AQM_LIMIT, "aqm_limit", U32, NULL),
+	LIBRANPU_PARAM(AQM_TARGET, "aqm_target", U32, NULL),
+	LIBRANPU_PARAM(AQM_DELAY_US, "aqm_delay_us", U32, NULL),
+	LIBRANPU_PARAM(AQM_INTERVAL_US, "aqm_interval_us", U32,
+		       libranpu_interval_validate),
+	LIBRANPU_PARAM(AQM_MIN_FRAMES, "aqm_min_frames", U32, NULL),
+	LIBRANPU_PARAM(AQM_SMALL_BYTES, "aqm_small_bytes", U32, NULL),
+};
+
 static const struct devlink_ops libranpu_devlink_ops = {
 	.info_get = libranpu_info_get,
 };
@@ -108,6 +211,8 @@ void libranpu_devlink_register(struct libranpu *npu)
 			  LIBRANPU_RES_RX_BUFFERS, libranpu_rx_buffers_occ);
 	libranpu_resource(npu, "tx_tokens", npu->tx_tokens,
 			  LIBRANPU_RES_TX_TOKENS, libranpu_tx_tokens_occ);
+	npu->dl_params = !devl_params_register(npu->devlink, libranpu_params,
+					       ARRAY_SIZE(libranpu_params));
 	devl_register(npu->devlink);
 	devl_unlock(npu->devlink);
 }
@@ -116,6 +221,9 @@ void libranpu_devlink_unregister(struct libranpu *npu)
 {
 	devl_lock(npu->devlink);
 	devl_unregister(npu->devlink);
+	if (npu->dl_params)
+		devl_params_unregister(npu->devlink, libranpu_params,
+				       ARRAY_SIZE(libranpu_params));
 	devl_resources_unregister(npu->devlink);
 	devl_unlock(npu->devlink);
 }

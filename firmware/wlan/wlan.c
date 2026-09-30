@@ -487,7 +487,7 @@ static int wlan_aqm(struct cmd_ctx *c)
 		return -EINVAL;
 	if (q->set) {
 		/* 16 intervals must fit the signed 32-bit cycle clock */
-		if (!q->interval_us || q->interval_us > AQM_INTERVAL_MAX_US ||
+		if (!q->interval_us || q->interval_us > LIBRANPU_AQM_INTERVAL_MAX_US ||
 		    q->delay_us > q->interval_us)
 			return -EINVAL;
 		a->limit = q->limit;

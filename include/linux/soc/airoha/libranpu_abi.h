@@ -294,6 +294,8 @@ struct libranpu_wlan_sta_q {
  * CoDel drops against a standing in-chip delay. Defaults: on, 8192,
  * target 0, 10 ms, 100 ms, 64, 256.
  */
+#define LIBRANPU_AQM_INTERVAL_MAX_US	150000
+
 struct libranpu_wlan_aqm {
 	__u8 radio;
 	__u8 set;			/* 0: only read */
