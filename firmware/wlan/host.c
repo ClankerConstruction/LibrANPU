@@ -24,6 +24,7 @@ struct host_state {
 	struct wlan_rx_msg seg[WLAN_MAX_SEGS];
 	u32 nseg;
 	u32 delivered;
+	bool full;			/* the host ring was full last time */
 };
 
 static struct host_state hs;
@@ -38,6 +39,7 @@ static void host_reset(struct wlan_radio *r)
 	hs.hidx = 0;
 	hs.pending = 0;
 	hs.nseg = 0;
+	hs.full = false;
 	/* held ids come back through the return ring like delivered ones */
 	hs.delivered = r->held;
 	WRITE_ONCE(r->delivered, r->held);
@@ -58,9 +60,12 @@ static bool host_deliver(struct wlan_radio *r)
 	u32 i, len = 0, n = hs.nseg;
 
 	if (ring_room(h, false) < n && ring_room(h, true) < n) {
-		r->stats.host_full++;
+		if (!hs.full)
+			r->stats.host_full++;
+		hs.full = true;
 		return false;
 	}
+	hs.full = false;
 
 	for (i = 0; i < n; i++)
 		len += hs.seg[i].len;

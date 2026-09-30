@@ -412,7 +412,7 @@ struct libranpu_wlan_stats {
 	__le32 rx_pn_fail;		/* to the host as errors */
 	__le32 rx_bad_id;
 	__le32 host_segs;		/* host rx entries written */
-	__le32 host_full;		/* host rx ring full */
+	__le32 host_full;		/* times the host rx ring filled */
 	__le32 host_dropped;		/* segments cut short */
 	__le32 buf_refill[2];		/* per band: chip slots refilled */
 	__le32 buf_returned;		/* ids back from the host */
