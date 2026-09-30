@@ -476,7 +476,7 @@ static void test_reset(void)
 #define LAN_TOKENS	2150	/* 2048 parked in the rings: few left */
 #define LAN_RING	1024
 #define TDMA_RX(k)	(NPU_FE_BASE + 0x900 + 0x10 * (k))
-#define HTXF_ENTRIES	256
+#define HTXF_ENTRIES	1024
 #define TXF_BATCH	24		/* tokens per chip report */
 #define HEADROOM	64
 #define BUF_LEN		1664

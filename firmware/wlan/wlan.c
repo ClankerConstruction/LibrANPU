@@ -109,6 +109,29 @@ static void txfree_ring(struct wlan_radio *r,
 /* the attach's ring table, read from the host: control only */
 static struct libranpu_wlan_ring att_ring[LIBRANPU_WLAN_RINGS];
 
+/*
+ * A tx free ring's report must fit the host ring whole, one record a
+ * word at most, and every buffer the host armed must be in reach.
+ */
+static int txfree_check(struct wlan_radio *r, u32 b)
+{
+	struct wlan_ring *w = &r->txfree[b];
+	u32 len = FIELD_GET(WLAN_RX_DESC_LEN, r->txfree_arm[b]), i;
+
+	if (!w->desc)
+		return 0;
+	if (!r->htxf.base || r->htxf.entries <= len / 2)
+		return -EINVAL;
+	for (i = 0; i < w->entries; i++) {
+		volatile u32 *d = (u32 *)(w->desc + 16 * i);
+
+		/* the host's one empty slot has no buffer */
+		if (d[0] && !plat_host_ptr(d[0], len))
+			return -ERANGE;
+	}
+	return 0;
+}
+
 /* the rings of one link in one block, and the link's window over it */
 static int place_link(struct wlan_radio *r,
 		      const struct libranpu_wlan_attach *a, u32 link)
@@ -242,6 +265,11 @@ static int wlan_attach(struct cmd_ctx *c)
 	}
 	if (need >= a->pool_ids || !r->hrx[0].base || !r->hret.base)
 		return -EINVAL;
+	for (i = 0; i < WLAN_BANDS; i++) {
+		err = txfree_check(r, i);
+		if (err)
+			return err;
+	}
 
 	r->nbands = a->bands;
 	r->flags = a->flags;
