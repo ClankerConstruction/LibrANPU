@@ -63,14 +63,14 @@ const struct task *task_get(u32 idx)
 	return NULL;
 }
 
-static void add64(__le32 *lo, __le32 *hi, u32 v)
-{
-	u32 l = *lo + v;
-
-	if (l < v)
-		(*hi)++;
-	*lo = l;
-}
+/* a task's counters; the debug record gets stores only */
+struct task_acct {
+	u32 passes;
+	u32 work;
+	u64 busy;
+	u64 idle;
+	u32 errors;
+};
 
 static void __noreturn park(u32 hart)
 {
@@ -84,31 +84,41 @@ void __noreturn runner(u32 hart)
 {
 	struct hart_rt *h = &harts[hart];
 	struct libranpu_dbg_hart *rec = &dbgblk->hart[hart];
+	/* fixed once the harts run: a copy on the cached stack */
+	struct task task[TASKS_PER_HART];
+	struct task_acct acct[TASKS_PER_HART] = {};
+	u32 i, n = h->n, beat = 0;
 
+	for (i = 0; i < n; i++)
+		task[i] = h->task[i];
 	dbg_hart_state(hart, LIBRANPU_HART_RUN);
 	for (;;) {
-		u32 i;
-
 		if (READ_ONCE(h->park) && hart)
 			park(hart);
 
-		for (i = 0; i < h->n; i++) {
-			struct task *t = &h->task[i];
+		for (i = 0; i < n; i++) {
+			struct task *t = &task[i];
+			struct libranpu_dbg_task *r = t->rec;
+			struct task_acct *a = &acct[i];
 			u32 t0 = cycles(), dt;
 			int w = t->run(t, t->budget);
 
 			dt = cycles() - t0;
-			t->rec->passes++;
+			r->passes = ++a->passes;
 			if (w > 0) {
-				t->rec->work += w;
-				add64(&t->rec->busy_lo, &t->rec->busy_hi, dt);
+				r->work = a->work += w;
+				a->busy += dt;
+				r->busy_lo = (u32)a->busy;
+				r->busy_hi = a->busy >> 32;
 			} else {
-				add64(&t->rec->idle_lo, &t->rec->idle_hi, dt);
+				a->idle += dt;
+				r->idle_lo = (u32)a->idle;
+				r->idle_hi = a->idle >> 32;
 				if (w < 0)
-					t->rec->errors++;
+					r->errors = ++a->errors;
 			}
 		}
-		rec->heartbeat++;
+		rec->heartbeat = ++beat;
 
 		/* hart 0 parks last: it answers the command that asked */
 		if (!hart && READ_ONCE(h->park))
