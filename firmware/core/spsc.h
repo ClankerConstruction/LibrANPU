@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /*
  * Single-producer single-consumer ring in uncached SRAM. Each side
- * keeps its own index and a cached copy of the other side's.
+ * keeps its own index, a cached copy of the other side's and of the
+ * ring's constant geometry.
  */
 #ifndef __CORE_SPSC_H
 #define __CORE_SPSC_H
@@ -21,12 +22,18 @@ struct spsc {
 
 struct spsc_prod {
 	struct spsc *r;
+	u8 *ent;
+	u32 mask;
+	u32 shift;			/* log2 of the entry size */
 	u32 head;
 	u32 tail;			/* last tail seen */
 };
 
 struct spsc_cons {
 	struct spsc *r;
+	u8 *ent;
+	u32 mask;
+	u32 shift;
 	u32 tail;
 	u32 head;			/* last head seen */
 };
@@ -36,6 +43,7 @@ static inline u32 spsc_bytes(u32 entries, u32 entry_size)
 	return sizeof(struct spsc) + entries * entry_size;
 }
 
+/* entries and entry_size: powers of two */
 static inline void spsc_init(struct spsc *r, u32 entries, u32 entry_size)
 {
 	r->head = 0;
@@ -47,6 +55,9 @@ static inline void spsc_init(struct spsc *r, u32 entries, u32 entry_size)
 static inline void spsc_prod_init(struct spsc_prod *p, struct spsc *r)
 {
 	p->r = r;
+	p->ent = r->entries;
+	p->mask = r->mask;
+	p->shift = __builtin_ctz(r->entry_size);
 	p->head = READ_ONCE(r->head);
 	p->tail = READ_ONCE(r->tail);
 }
@@ -54,19 +65,17 @@ static inline void spsc_prod_init(struct spsc_prod *p, struct spsc *r)
 static inline void spsc_cons_init(struct spsc_cons *c, struct spsc *r)
 {
 	c->r = r;
+	c->ent = r->entries;
+	c->mask = r->mask;
+	c->shift = __builtin_ctz(r->entry_size);
 	c->tail = READ_ONCE(r->tail);
 	c->head = READ_ONCE(r->head);
-}
-
-static inline void *spsc_entry(struct spsc *r, u32 idx)
-{
-	return r->entries + (idx & r->mask) * r->entry_size;
 }
 
 /* free slots; reloads tail only when the cached view looks short */
 static inline u32 spsc_room(struct spsc_prod *p, u32 want)
 {
-	u32 size = p->r->mask + 1;
+	u32 size = p->mask + 1;
 
 	if (size - (p->head - p->tail) < want)
 		p->tail = READ_ONCE(p->r->tail);
@@ -76,7 +85,7 @@ static inline u32 spsc_room(struct spsc_prod *p, u32 want)
 /* slot i of the next batch; write it, then spsc_publish */
 static inline void *spsc_slot(struct spsc_prod *p, u32 i)
 {
-	return spsc_entry(p->r, p->head + i);
+	return p->ent + (((p->head + i) & p->mask) << p->shift);
 }
 
 static inline void spsc_publish(struct spsc_prod *p, u32 n)
@@ -97,7 +106,7 @@ static inline u32 spsc_avail(struct spsc_cons *c, u32 want)
 
 static inline void *spsc_peek(struct spsc_cons *c, u32 i)
 {
-	return spsc_entry(c->r, c->tail + i);
+	return c->ent + (((c->tail + i) & c->mask) << c->shift);
 }
 
 /* entries read before the producer may reuse their slots */
