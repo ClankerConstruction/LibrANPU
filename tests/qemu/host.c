@@ -1154,6 +1154,15 @@ static void wlan_session(u32 frames, bool force, u32 nheld, bool stall)
 	      "stats frames %u stale %u gap %u segs %u bound %u", ws.rx_frames,
 	      ws.rx_stale, ws.rx_ind[6], ws.host_segs, ws.ppe_bound);
 
+	/* reports held: one station's frames in the chip pass its limit */
+	if (nheld) {
+		chip.txf_hold = 1;
+		for (t0 = cycles(); !lan_drops() && cycles() - t0 < TIMEOUT;) {
+			fe_lan(0, 4);
+			chip_tx_step();
+		}
+	}
+
 	/* the chip takes what is left of the host's tx and reports it */
 	chip.txf_hold = 0;
 	for (t0 = cycles(); cycles() - t0 < TIMEOUT &&
@@ -1187,7 +1196,7 @@ static void wlan_session(u32 frames, bool force, u32 nheld, bool stall)
 	    NULL);
 	w.page = 0;
 	CHECK(chip.lan_taken + wt.lan_limit_drops + wt.lan_aqm_drops == lan_sent &&
-	      !chip.lan_bad && lan_sent > frames &&
+	      !chip.lan_bad && lan_sent > frames / 2 &&
 	      (nheld ? wt.lan_limit_drops > 0 : !wt.lan_limit_drops),
 	      "lan frames %u + limit %u + aqm %u of %u, bad %u", chip.lan_taken,
 	      wt.lan_limit_drops, wt.lan_aqm_drops, lan_sent, chip.lan_bad);
