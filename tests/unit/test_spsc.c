@@ -46,6 +46,28 @@ TEST(batch_publish)
 	CHECK_EQ(spsc_room(&p, 16), 16);
 }
 
+/* a batch writes slot k only while room covers k + 1 slots */
+TEST(room_for_unpublished_batch)
+{
+	struct spsc *r = (void *)buf;
+	struct spsc_prod p;
+	struct spsc_cons c;
+	u32 k, v;
+
+	spsc_init(r, 8, 4);
+	spsc_prod_init(&p, r);
+	spsc_cons_init(&c, r);
+	for (k = 0; k < 6; k++)
+		CHECK(spsc_push32(&p, k));
+	for (k = 0; spsc_room(&p, k + 1) > k; k++)
+		*(u32 *)spsc_slot(&p, k) = 100 + k;
+	CHECK_EQ(k, 2);
+	spsc_publish(&p, k);
+	CHECK_EQ(spsc_room(&p, 1), 0);
+	for (k = 0; k < 8; k++)
+		CHECK(spsc_pop32(&c, &v) && v == (k < 6 ? k : 100 + k - 6));
+}
+
 #define N	2000000
 
 static void *producer(void *arg)

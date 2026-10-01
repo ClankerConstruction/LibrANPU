@@ -21,13 +21,16 @@ $(O)/test_printf: test_printf.c harness.c $(O)/printf.o
 # the formatter under another name, beside the C library's
 $(O)/printf.o: $(FW)/lib/printf.c
 	@mkdir -p $(O)
-	$(CC) $(CFLAGS) -Dvsnprintf=fw_vsnprintf -Dsnprintf=fw_snprintf -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -Dvsnprintf=fw_vsnprintf -Dsnprintf=fw_snprintf -c $< -o $@
 
+# one dependency file per test, over all its sources
 $(O)/test_%:
 	@mkdir -p $(O)
+	$(CC) $(CFLAGS) -MM -MP -MT $@ $(filter %.c,$^) > $@.d
 	$(CC) $(CFLAGS) -o $@ $(filter %.c %.o,$^) -lpthread
 
 clean:
 	rm -rf $(O)
 
 .PHONY: all clean
+-include $(wildcard $(O)/*.d)
