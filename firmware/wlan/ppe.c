@@ -25,9 +25,15 @@
 #define BUF_CFG_CLEAR		(BUF_CFG_HW_BUFMNG | GENMASK(19, 18) | \
 				 GENMASK(15, 8))
 
+/* buffer task */
 static struct {
 	u32 epoch;
 	struct spsc_prod host;
+	volatile u16 *len;
+	u32 ids;
+	u32 bound;			/* the radio's counters */
+	u32 unbound;
+	u32 bad;
 } ps __hart_local;
 
 int ppe_attach(struct wlan_radio *r)
@@ -70,14 +76,18 @@ int ppe_attach(struct wlan_radio *r)
 }
 
 /* buffer task: one MMIO read per entry; stopping frees every id */
-u32 ppe_take(struct wlan_radio *r, u32 budget, bool stopping)
+u32 ppe_take(struct wlan_radio *r, struct id_pool *pool, u32 budget,
+	     bool stopping)
 {
 	struct libranpu_wlan_stats *s = &r->stats;
-	u32 n = 0, k = 0;
+	u32 n = 0, k = 0, bound = ps.bound, unbound = ps.unbound;
 
 	if (ps.epoch != r->epoch) {
 		ps.epoch = r->epoch;
 		spsc_prod_init(&ps.host, r->ppe2host);
+		ps.len = r->ppe.len;
+		ps.ids = r->pool_ids;
+		bound = unbound = ps.bad = 0;
 	}
 
 	while (n < budget) {
@@ -85,14 +95,14 @@ u32 ppe_take(struct wlan_radio *r, u32 budget, bool stopping)
 
 		if (!(v & BUF_ID_VALID))
 			break;
-		if (unlikely(id >= r->pool_ids)) {
-			s->ppe_bad_id++;
+		if (unlikely(id >= ps.ids)) {
+			s->ppe_bad_id = ++ps.bad;
 		} else if ((v & BUF_ID_BOUND) || stopping) {
-			pool_put(&r->pool, id, 0, r->pool_ids - 1);
+			pool_put(pool, id, 0, ps.ids - 1);
 			if (v & BUF_ID_BOUND)
-				s->ppe_bound++;
+				bound++;
 			else
-				s->ppe_unbound++;
+				unbound++;
 		} else {
 			struct wlan_rx_msg *m;
 			u32 inf;
@@ -102,14 +112,14 @@ u32 ppe_take(struct wlan_radio *r, u32 budget, bool stopping)
 			inf = REG32(FE_WIFI_PPE_INF);
 			m = spsc_slot(&ps.host, k++);
 			m->id = id;
-			m->len = r->ppe.len[id];
+			m->len = ps.len[id];
 			m->info = FIELD_PREP(LIBRANPU_HRX_FOE,
 					     FIELD_GET(PPE_INF_FOE, inf)) |
 				  FIELD_PREP(LIBRANPU_HRX_CRSN,
 					     FIELD_GET(PPE_INF_CRSN, inf)) |
 				  FIELD_PREP(LIBRANPU_HRX_REASON,
 					     LIBRANPU_HRX_PPE) | WRX_LAST;
-			s->ppe_unbound++;
+			unbound++;
 			s->ppe_crsn[FIELD_GET(PPE_INF_CRSN, inf)]++;
 		}
 		REG32(FE_WIFI_BUF_ID) = NPU_FE_POP;
@@ -117,6 +127,10 @@ u32 ppe_take(struct wlan_radio *r, u32 budget, bool stopping)
 	}
 	if (k)
 		spsc_publish(&ps.host, k);
+	if (bound != ps.bound)
+		s->ppe_bound = ps.bound = bound;
+	if (unbound != ps.unbound)
+		s->ppe_unbound = ps.unbound = unbound;
 	return n;
 }
 

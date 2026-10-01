@@ -11,81 +11,116 @@
 #define RET_PROD		8	/* host writes */
 #define RET_CONS		0xC	/* we write */
 #define REFILL_PUBLISH		64
+#define LINE			64
+
+struct buf_ring {
+	u32 desc;
+	u32 entries;
+	u32 regs;
+	u32 refill;			/* next slot to refill */
+	u32 unpublished;
+	u32 count;			/* the radio's buf_refill */
+};
 
 struct buf_state {
 	u32 epoch;
 	struct spsc_cons from_rx;
 	struct spsc_cons from_host;
+	struct id_pool pool;		/* ours from the reset on */
 	u32 ret_cons;
-	u32 refill[WLAN_BANDS];		/* next slot to refill */
-	u32 unpublished[WLAN_BANDS];
 	u32 returned;			/* ids back from the host */
+	struct buf_ring rx[WLAN_BANDS];
+	/* fixed per attach */
+	u32 nbands;
+	u32 ids;
+	const u8 *ret;			/* host return ring, cached view */
+	u32 ret_entries;
+	u32 ret_regs;
 };
 
 static struct buf_state bs __hart_local;
 
-static void buf_reset(struct wlan_radio *r)
+static void __attribute__((noinline)) buf_reset(struct wlan_radio *r)
 {
 	u32 b;
 
 	bs.epoch = r->epoch;
 	spsc_cons_init(&bs.from_rx, r->rx2buf);
 	spsc_cons_init(&bs.from_host, r->host2buf);
+	bs.pool = r->pool;
 	bs.ret_cons = 0;
 	bs.returned = 0;
+	bs.nbands = r->nbands;
+	bs.ids = r->pool_ids;
+	bs.ret = plat_cached((void *)(uintptr_t)r->hret.base);
+	bs.ret_entries = r->hret.entries;
+	bs.ret_regs = r->hret.regs;
 	for (b = 0; b < WLAN_BANDS; b++) {
-		bs.refill[b] = 0;
-		bs.unpublished[b] = 0;
+		bs.rx[b] = (struct buf_ring){
+			.desc = r->rx[b].desc,
+			.entries = r->rx[b].entries,
+			.regs = r->rx[b].regs,
+		};
 	}
-	REG32(r->hret.regs + RET_CONS) = 0;
+	REG32(bs.ret_regs + RET_CONS) = 0;
 }
 
-static void put_id(struct wlan_radio *r, u32 id)
+static inline void put_id(u32 id)
 {
-	pool_put(&r->pool, id, 0, r->pool_ids - 1);
+	pool_put(&bs.pool, id, 0, bs.ids - 1);
 }
 
-static u32 take_spsc(struct wlan_radio *r, struct spsc_cons *c)
+static u32 take_spsc(struct spsc_cons *c)
 {
 	u32 n = spsc_avail(c, 1), i;
 
 	for (i = 0; i < n; i++)
-		put_id(r, *(volatile u32 *)spsc_peek(c, i));
+		put_id(*(volatile u32 *)spsc_peek(c, i));
 	if (n)
 		spsc_release(c, n);
 	return n;
 }
 
-/* ids the host is done with; its index is not trusted past the ring */
+/*
+ * ids the host is done with, read through the cache a line at a time;
+ * its index is not trusted past the ring.
+ */
 static u32 take_host(struct wlan_radio *r)
 {
-	struct wlan_host_ring *h = &r->hret;
-	u32 prod = REG32(h->regs + RET_PROD) % h->entries, n = 0;
-	volatile u32 *e = (u32 *)h->base;
+	u32 prod = REG32(bs.ret_regs + RET_PROD), cons = bs.ret_cons, n = 0;
 
-	while (bs.ret_cons != prod) {
-		u32 id = e[bs.ret_cons] & 0xFFFF;
+	if (unlikely(prod >= bs.ret_entries))
+		prod %= bs.ret_entries;
+	while (cons != prod) {
+		const volatile u32 *e = (const u32 *)(bs.ret + 4 * cons);
+		u32 id;
 
-		if (id >= r->pool_ids)
+		/* the host may have added entries to this line since */
+		if (!n || !((uintptr_t)e & (LINE - 1)))
+			plat_dcache_inv((const void *)((uintptr_t)e & ~(LINE - 1)));
+		id = *e & 0xFFFF;
+		if (id >= bs.ids)
 			r->stats.buf_bad_ret++;
 		else
-			put_id(r, id);
-		bs.ret_cons = (bs.ret_cons + 1) % h->entries;
+			put_id(id);
+		if (++cons == bs.ret_entries)
+			cons = 0;
 		n++;
 	}
 	if (n) {
+		bs.ret_cons = cons;
 		bs.returned += n;
-		r->stats.buf_returned += n;
-		REG32(h->regs + RET_CONS) = bs.ret_cons;
+		r->stats.buf_returned = bs.returned;
+		REG32(bs.ret_regs + RET_CONS) = cons;
 	}
 	return n;
 }
 
-/* the chip hands slots back in order: refill from bs.refill on */
+/* the chip hands slots back in order: refill from w->refill on */
 static u32 refill(struct wlan_radio *r, u32 b, u32 budget)
 {
-	struct wlan_ring *w = &r->rx[b];
-	u32 idx = bs.refill[b], n = 0;
+	struct buf_ring *w = &bs.rx[b];
+	u32 idx = w->refill, n = 0;
 	u16 id;
 
 	while (n < budget) {
@@ -93,7 +128,7 @@ static u32 refill(struct wlan_radio *r, u32 b, u32 budget)
 
 		if (!(d[1] & WLAN_RX_DESC_DONE))
 			break;
-		if (!pool_get(&r->pool, &id, 1)) {
+		if (!pool_get(&bs.pool, &id, 1)) {
 			r->stats.buf_empty++;
 			break;
 		}
@@ -102,13 +137,14 @@ static u32 refill(struct wlan_radio *r, u32 b, u32 budget)
 		n++;
 	}
 	if (n) {
-		r->stats.buf_refill[b] += n;
-		bs.refill[b] = idx;
-		bs.unpublished[b] += n;
-		if (bs.unpublished[b] >= REFILL_PUBLISH || n < budget) {
+		w->count += n;
+		r->stats.buf_refill[b] = w->count;
+		w->refill = idx;
+		w->unpublished += n;
+		if (w->unpublished >= REFILL_PUBLISH || n < budget) {
 			wmb();
 			REG32(w->regs + 8) = idx ? idx - 1 : w->entries - 1u;
-			bs.unpublished[b] = 0;
+			w->unpublished = 0;
 		}
 	}
 	return n;
@@ -120,18 +156,17 @@ static void buf_audit(struct wlan_radio *r)
 	struct libranpu_wlan_audit *a = &r->audit;
 	u32 b, i, chip = 0;
 
-	for (b = 0; b < r->nbands; b++)
-		for (i = 0; i < r->rx[b].entries; i++)
-			if (!(REG32(r->rx[b].desc + 16 * i + 4) &
+	for (b = 0; b < bs.nbands; b++)
+		for (i = 0; i < bs.rx[b].entries; i++)
+			if (!(REG32(bs.rx[b].desc + 16 * i + 4) &
 			      WLAN_RX_DESC_DONE))
 				chip++;
-	a->free = r->pool.top;
+	a->free = bs.pool.top;
 	a->chip = chip;
 	a->host = READ_ONCE(r->delivered) - bs.returned;
 	a->transit = spsc_avail(&bs.from_rx, 1) + spsc_avail(&bs.from_host, 1);
 	a->fe = ppe_held(r);
-	a->lost = r->pool_ids - a->free - a->chip - a->host - a->transit -
-		  a->fe;
+	a->lost = bs.ids - a->free - a->chip - a->host - a->transit - a->fe;
 }
 
 int wlan_buf_task(struct task *t, int budget)
@@ -149,12 +184,12 @@ int wlan_buf_task(struct task *t, int budget)
 	}
 
 	n = take_host(r);
-	n += take_spsc(r, &bs.from_rx);
-	n += take_spsc(r, &bs.from_host);
-	n += ppe_take(r, budget * 32, st == WLAN_STOPPING);
+	n += take_spsc(&bs.from_rx);
+	n += take_spsc(&bs.from_host);
+	n += ppe_take(r, &bs.pool, budget * 32, st == WLAN_STOPPING);
 
 	if (st == WLAN_RUNNING) {
-		for (b = 0; b < r->nbands; b++)
+		for (b = 0; b < bs.nbands; b++)
 			n += refill(r, b, budget * 32);
 		return n;
 	}
@@ -163,8 +198,8 @@ int wlan_buf_task(struct task *t, int budget)
 	if (READ_ONCE(r->ack[WT_RX]) == WLAN_STOPPING &&
 	    READ_ONCE(r->ack[WT_HOST]) == WLAN_STOPPING && !n &&
 	    !ppe_held(r)) {
-		take_spsc(r, &bs.from_rx);
-		take_spsc(r, &bs.from_host);
+		take_spsc(&bs.from_rx);
+		take_spsc(&bs.from_host);
 		buf_audit(r);
 		wmb();
 		WRITE_ONCE(r->ack[WT_BUF], st);

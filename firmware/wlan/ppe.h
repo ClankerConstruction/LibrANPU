@@ -83,7 +83,8 @@ static inline void ppe_kick(struct wlan_ppe *p)
 }
 
 int ppe_attach(struct wlan_radio *r);
-u32 ppe_take(struct wlan_radio *r, u32 budget, bool stopping);
+u32 ppe_take(struct wlan_radio *r, struct id_pool *pool, u32 budget,
+	     bool stopping);
 u32 ppe_held(struct wlan_radio *r);
 
 #endif
