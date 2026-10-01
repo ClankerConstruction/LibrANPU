@@ -96,7 +96,7 @@ u32 ppe_take(struct wlan_radio *r, u32 budget, bool stopping)
 			struct wlan_rx_msg *m;
 			u32 inf;
 
-			if (!spsc_room(&ps.host, k + 1))
+			if (spsc_room(&ps.host, k + 1) <= k)
 				break;
 			inf = REG32(FE_WIFI_PPE_INF);
 			m = spsc_slot(&ps.host, k++);
