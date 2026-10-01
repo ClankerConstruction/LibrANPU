@@ -55,8 +55,8 @@ static inline void ppe_pad(u8 *frame, u32 len)
 		frame[len++] = 0;
 }
 
-static inline void ppe_submit(struct wlan_radio *r, struct wlan_ppe *p,
-			      u32 id, u32 ofs, u32 len, u32 host_len)
+static inline void ppe_submit(struct wlan_ppe *p, u32 id, u32 ofs, u32 len,
+			      u32 host_len)
 {
 	volatile u32 *d = (u32 *)(p->ring + 8 * p->idx);
 
@@ -65,7 +65,7 @@ static inline void ppe_submit(struct wlan_radio *r, struct wlan_ppe *p,
 		len = PPE_MIN_LEN;
 	}
 	p->len[id] = host_len;
-	d[1] = wlan_pool_bus(r, id) + ofs;
+	d[1] = p->pool_bus + id * LIBRANPU_RX_BUF_SIZE + ofs;
 	d[0] = TXD_LS | FIELD_PREP(TXD_ID, id) | FIELD_PREP(TXD_LEN, len);
 	p->idx = (p->idx + 1) % PPE_RING;
 	p->room--;

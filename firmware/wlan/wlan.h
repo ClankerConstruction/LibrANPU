@@ -84,6 +84,7 @@ struct wlan_ppe {
 	u32 pending;			/* filled, not yet published */
 	volatile u16 *len;		/* per id: the host length */
 	u8 *pool;			/* rx buffers, uncached */
+	u32 pool_bus;			/* and as the frame engine sees them */
 };
 
 

@@ -21,20 +21,38 @@
 #define RXD_TO_HOST		BIT(7)
 #define RXD_GEN			GENMASK(31, 28)
 #define RX_BATCH		32
+#define RX_PUBLISH		16	/* host task sees frames this often */
 #define RX_TO_PPE		0xFF
 
 struct rx_state {
 	u32 epoch;
 	u32 ridx;
 	u32 gen;
+	bool chain;			/* inside a multi-segment frame */
 	struct spsc_prod host;
 	struct spsc_prod drop;
-	bool chain;			/* inside a multi-segment frame */
+	struct wlan_ppe ppe;		/* producer side: ours alone */
+	/* fixed per attach */
+	u32 desc;
+	u32 entries;
+	u32 regs;
+	u32 pool_ids;
+	u32 headroom;
+};
+
+/* one pass: counters go to the radio once, frames to the next hop in batches */
+struct rx_pass {
+	u32 host;			/* entries not yet published */
+	u32 drop;
+	u32 ppe;
+	bool force;
+	bool stopping;
+	u32 ind[16];
 };
 
 static struct rx_state rxs __hart_local;
 
-static void rx_reset(struct wlan_radio *r)
+static void __attribute__((noinline)) rx_reset(struct wlan_radio *r)
 {
 	rxs.epoch = r->epoch;
 	rxs.ridx = 0;
@@ -42,10 +60,17 @@ static void rx_reset(struct wlan_radio *r)
 	spsc_prod_init(&rxs.host, r->rx2host);
 	spsc_prod_init(&rxs.drop, r->rx2buf);
 	rxs.chain = false;
+	rxs.ppe = r->ppe;
+	rxs.desc = r->rxdmad.desc;
+	rxs.entries = r->rxdmad.entries;
+	rxs.regs = r->rxdmad.regs;
+	rxs.pool_ids = r->pool_ids;
+	rxs.headroom = r->headroom;
 }
 
 /* every other indication reason releases a good frame */
-static u8 rx_reason(struct wlan_radio *r, u32 w1, u32 w2)
+static u8 rx_reason(struct wlan_radio *r, const struct rx_pass *p, u32 w1,
+		    u32 w2)
 {
 	if ((w1 & RXD_PN_FAIL) || FIELD_GET(RXD_IND, w2) == RXD_IND_PN_FAIL) {
 		r->stats.rx_pn_fail++;
@@ -55,36 +80,36 @@ static u8 rx_reason(struct wlan_radio *r, u32 w1, u32 w2)
 		return LIBRANPU_HRX_CHIP;
 	if (FIELD_GET(RXD_DST, w1) != RXD_DST_8023)
 		return LIBRANPU_HRX_RAW;
-	if (READ_ONCE(r->flags) & LIBRANPU_WLAN_F_FORCE_HOST)
+	if (p->force)
 		return LIBRANPU_HRX_FORCED;
 	return RX_TO_PPE;
 }
 
 /* the PPE gets the 802.3 frame, the host the whole buffer later */
-static bool rx_ppe(struct wlan_radio *r, u32 id, u32 w1)
+static bool rx_ppe(struct wlan_radio *r, struct rx_pass *p, u32 id, u32 w1)
 {
 	u32 len = FIELD_GET(RXD_LEN, w1);
 	u32 hdr = 2 * FIELD_GET(RXD_HDR_OFS, w1);
 
-	if (!ppe_room(&r->ppe)) {
+	if (!ppe_room(&rxs.ppe)) {
 		r->stats.ppe_full++;
 		return false;
 	}
-	ppe_submit(r, &r->ppe, id, r->headroom + hdr, len - hdr,
-		   len);
-	r->stats.ppe_tx++;
+	ppe_submit(&rxs.ppe, id, rxs.headroom + hdr, len - hdr, len);
+	p->ppe++;
 	return true;
 }
 
 /* one burst; false when the next hop is full and the slot must wait */
-static bool rx_one(struct wlan_radio *r, u32 w1, u32 w2, bool stopping)
+static bool rx_one(struct wlan_radio *r, struct rx_pass *p, u32 w1, u32 w2)
 {
 	u32 id = FIELD_GET(RXD_ID, w2), ind = FIELD_GET(RXD_IND, w2);
 	bool last = w1 & RXD_LAST, chain = rxs.chain || !last;
+	bool stopping = p->stopping;
 	struct wlan_rx_msg *m;
 	u32 reason;
 
-	if (unlikely(id >= r->pool_ids)) {
+	if (unlikely(id >= rxs.pool_ids)) {
 		r->stats.rx_bad_id++;
 		return true;
 	}
@@ -94,38 +119,61 @@ static bool rx_one(struct wlan_radio *r, u32 w1, u32 w2, bool stopping)
 		stopping = true;
 	}
 	if (stopping) {
-		if (!spsc_room(&rxs.drop, 1))
+		if (spsc_room(&rxs.drop, p->drop + 1) <= p->drop)
 			return false;
-		*(u32 *)spsc_slot(&rxs.drop, 0) = id;
-		spsc_publish(&rxs.drop, 1);
+		*(u32 *)spsc_slot(&rxs.drop, p->drop++) = id;
 		rxs.chain = !last;
 		return true;
 	}
 
-	reason = rx_reason(r, w1, w2);
+	reason = rx_reason(r, p, w1, w2);
 	if (reason == RX_TO_PPE && !chain && FIELD_GET(RXD_LEN, w1) >
 	    2 * FIELD_GET(RXD_HDR_OFS, w1))
-		return rx_ppe(r, id, w1);
+		return rx_ppe(r, p, id, w1);
 	if (reason == RX_TO_PPE)
 		reason = LIBRANPU_HRX_CHAIN;
 
-	if (!spsc_room(&rxs.host, 1))
+	if (spsc_room(&rxs.host, p->host + 1) <= p->host)
 		return false;
-	m = spsc_slot(&rxs.host, 0);
+	m = spsc_slot(&rxs.host, p->host++);
 	m->id = id;
 	m->len = FIELD_GET(RXD_LEN, w1);
 	m->info = FIELD_PREP(LIBRANPU_HRX_REASON, reason) |
 		  (last ? WRX_LAST : 0);
-	spsc_publish(&rxs.host, 1);
 	rxs.chain = !last;
+	if (p->host == RX_PUBLISH) {
+		spsc_publish(&rxs.host, p->host);
+		p->host = 0;
+	}
 	return true;
+}
+
+static void rx_pass_end(struct wlan_radio *r, struct rx_pass *p, u32 n)
+{
+	struct libranpu_wlan_stats *s = &r->stats;
+	u32 i;
+
+	if (p->host)
+		spsc_publish(&rxs.host, p->host);
+	if (p->drop)
+		spsc_publish(&rxs.drop, p->drop);
+	/* counted before the frame engine can hand any of them back */
+	if (p->ppe) {
+		s->ppe_tx += p->ppe;
+		ppe_kick(&rxs.ppe);
+	}
+	s->rx_frames += n;
+	for (i = 0; i < ARRAY_SIZE(p->ind); i++)
+		if (p->ind[i])
+			s->rx_ind[i] += p->ind[i];
+	/* the chip may reuse every slot up to the last one read */
+	REG32(rxs.regs + 8) = rxs.ridx ? rxs.ridx - 1 : rxs.entries - 1u;
 }
 
 int wlan_rx_task(struct task *t, int budget)
 {
 	struct wlan_radio *r = t->ctx;
-	u32 st = wlan_state(r), n = 0;
-	struct wlan_ring *w = &r->rxdmad;
+	u32 st = wlan_state(r), n = 0, ridx, gen, max;
 
 	if (st == WLAN_DETACHED)
 		return 0;
@@ -136,28 +184,41 @@ int wlan_rx_task(struct task *t, int budget)
 		return 0;
 	}
 
-	while (n < (u32)budget * RX_BATCH) {
-		volatile u32 *d = (u32 *)(w->desc + 16 * rxs.ridx);
+	ridx = rxs.ridx;
+	gen = rxs.gen;
+	if (FIELD_GET(RXD_GEN, REG32(rxs.desc + 16 * ridx + 12)) != gen) {
+		if (st == WLAN_STOPPING)
+			WRITE_ONCE(r->ack[WT_RX], st);
+		return 0;
+	}
 
-		if (FIELD_GET(RXD_GEN, d[3]) != rxs.gen)
+	struct rx_pass p = {
+		.force = READ_ONCE(r->flags) & LIBRANPU_WLAN_F_FORCE_HOST,
+		.stopping = st == WLAN_STOPPING,
+	};
+
+	max = (u32)budget * RX_BATCH;
+	do {
+		volatile u32 *d = (u32 *)(rxs.desc + 16 * ridx);
+		u32 w1, w2;
+
+		if (FIELD_GET(RXD_GEN, d[3]) != gen)
 			break;
-		if (!rx_one(r, d[1], d[2], st == WLAN_STOPPING))
+		w1 = d[1];
+		w2 = d[2];
+		if (!rx_one(r, &p, w1, w2))
 			break;
-		r->stats.rx_ind[FIELD_GET(RXD_IND, d[2])]++;
+		p.ind[FIELD_GET(RXD_IND, w2)]++;
 		n++;
-		if (++rxs.ridx == w->entries) {
-			rxs.ridx = 0;
-			rxs.gen = (rxs.gen + 1) & 0xF;
+		if (++ridx == rxs.entries) {
+			ridx = 0;
+			gen = (gen + 1) & 0xF;
 		}
-	}
+	} while (n < max);
 
-	ppe_kick(&r->ppe);
-	if (n) {
-		r->stats.rx_frames += n;
-		/* the chip may reuse every slot up to the last one read */
-		REG32(w->regs + 8) = rxs.ridx ? rxs.ridx - 1 : w->entries - 1u;
-	} else if (st == WLAN_STOPPING) {
-		WRITE_ONCE(r->ack[WT_RX], st);
-	}
+	rxs.ridx = ridx;
+	rxs.gen = gen;
+	if (n)
+		rx_pass_end(r, &p, n);
 	return n;
 }

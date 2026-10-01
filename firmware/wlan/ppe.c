@@ -40,6 +40,7 @@ int ppe_attach(struct wlan_radio *r)
 	p->len = arena_alloc(&npu_sram, 2 * r->pool_ids, 4, OWNER_RADIO0);
 	p->pool = plat_host_ptr(r->pool_base,
 				r->pool_ids * LIBRANPU_RX_BUF_SIZE);
+	p->pool_bus = r->pool_base;
 	if (!p->ring || !p->len || !p->pool)
 		return -ENOSPC;
 
