@@ -2,7 +2,7 @@
 # run.sh [qemu args]: boot the QEMU image with the host model, exit 0 on PASS
 set -e
 cd "$(dirname "$0")"
-make -s
+make -s -j$(nproc)
 IMG=../../firmware/build/an7583-qemu/an7583-libranpu.bin
 LOADERS=""
 for h in 0 1 2 3 4 5; do

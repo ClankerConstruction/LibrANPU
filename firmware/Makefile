@@ -62,10 +62,14 @@ $(O)/gen/build_id.h: FORCE
 		sed 's/../0x&, /g; s/, $$//') }" > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
-$(O)/%.o: %.c $(O)/gen/build_id.h
+# only the image info carries the commit: a new one rebuilds nothing else
+$(O)/core/info.o: $(O)/gen/build_id.h
+$(O)/core/info.o: CPPFLAGS += -include build_id.h
+
+$(O)/%.o: %.c
 	@mkdir -p $(dir $@)
 	@echo "  CC $<"
-	@$(CC) $(CPPFLAGS) $(CPPFLAGS-y) -include build_id.h $(CFLAGS) -MMD -c $< -o $@
+	@$(CC) $(CPPFLAGS) $(CPPFLAGS-y) $(CFLAGS) -MMD -c $< -o $@
 
 $(O)/%.o: %.S
 	@mkdir -p $(dir $@)
