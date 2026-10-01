@@ -24,13 +24,24 @@ struct host_state {
 	struct wlan_rx_msg seg[WLAN_MAX_SEGS];
 	u32 nseg;
 	u32 delivered;
+	u32 segs;			/* the radio's host_segs */
 	bool full;			/* the host ring was full last time */
+	/* fixed per attach */
+	u32 base;
+	u32 entries;
+	u32 esize;
+	u32 regs;
+	u32 buf;			/* buffer word but the id */
+	u32 mod_frames;
+	u32 mod_cycles;
 };
 
 static struct host_state hs __hart_local;
 
-static void host_reset(struct wlan_radio *r)
+static void __attribute__((noinline)) host_reset(struct wlan_radio *r)
 {
+	struct wlan_host_ring *h = &r->hrx[0];
+
 	hs.epoch = r->epoch;
 	spsc_cons_init(&hs.in, r->rx2host);
 	spsc_cons_init(&hs.ppe, r->ppe2host);
@@ -39,27 +50,43 @@ static void host_reset(struct wlan_radio *r)
 	hs.hidx = 0;
 	hs.pending = 0;
 	hs.nseg = 0;
+	hs.segs = 0;
 	hs.full = false;
+	hs.base = h->base;
+	hs.entries = h->entries;
+	hs.esize = h->entry_size;
+	hs.regs = h->regs;
+	hs.buf = FIELD_PREP(LIBRANPU_HRX_OFFSET, r->headroom);
+	hs.mod_frames = r->mod_frames;
+	hs.mod_cycles = r->mod_cycles;
 	/* held ids come back through the return ring like delivered ones */
 	hs.delivered = r->held;
 	WRITE_ONCE(r->delivered, r->held);
-	REG32(r->hrx[0].regs + HRX_PROD) = 0;
+	REG32(hs.regs + HRX_PROD) = 0;
 }
 
-static u32 ring_room(const struct wlan_host_ring *h, bool reload)
+static u32 ring_room(bool reload)
 {
-	if (reload)
-		hs.hidx = REG32(h->regs + HRX_CONS) % h->entries;
-	return (hs.hidx + h->entries - hs.widx - 1) % h->entries;
+	if (reload) {
+		hs.hidx = REG32(hs.regs + HRX_CONS);
+		if (unlikely(hs.hidx >= hs.entries))
+			hs.hidx %= hs.entries;
+	}
+	return hs.hidx > hs.widx ? hs.hidx - hs.widx - 1 :
+	       hs.entries - hs.widx + hs.hidx - 1;
+}
+
+static volatile struct libranpu_host_rx *host_entry(u32 idx)
+{
+	return (void *)(hs.base + hs.esize * idx);
 }
 
 /* the segments of one frame; done bits from the tail to the head */
 static bool host_deliver(struct wlan_radio *r)
 {
-	struct wlan_host_ring *h = &r->hrx[0];
-	u32 i, len = 0, n = hs.nseg;
+	u32 i, idx, len = 0, n = hs.nseg;
 
-	if (ring_room(h, false) < n && ring_room(h, true) < n) {
+	if (ring_room(false) < n && ring_room(true) < n) {
 		if (!hs.full)
 			r->stats.host_full++;
 		hs.full = true;
@@ -69,34 +96,35 @@ static bool host_deliver(struct wlan_radio *r)
 
 	for (i = 0; i < n; i++)
 		len += hs.seg[i].len;
-	for (i = 0; i < n; i++) {
+	for (i = 0, idx = hs.widx; i < n; i++) {
+		volatile struct libranpu_host_rx *e = host_entry(idx);
 		struct wlan_rx_msg *m = &hs.seg[i];
-		volatile struct libranpu_host_rx *e = (void *)(h->base +
-			h->entry_size * ((hs.widx + i) % h->entries));
 
 		e->info = FIELD_PREP(LIBRANPU_HRX_SEGS, n) |
 			  (m->info & ~WRX_LAST);
 		e->data = 0;
-		e->buf = FIELD_PREP(LIBRANPU_HRX_ID, m->id) |
-			 FIELD_PREP(LIBRANPU_HRX_OFFSET, r->headroom);
+		e->buf = FIELD_PREP(LIBRANPU_HRX_ID, m->id) | hs.buf;
+		if (++idx == hs.entries)
+			idx = 0;
 	}
 	wmb();
+	/* idx is one past the last segment */
 	for (i = n; i-- > 0;) {
-		volatile struct libranpu_host_rx *e = (void *)(h->base +
-			h->entry_size * ((hs.widx + i) % h->entries));
-
-		e->ctrl = LIBRANPU_HRX_DONE |
-			  FIELD_PREP(LIBRANPU_HRX_SEG_LEN, hs.seg[i].len) |
-			  FIELD_PREP(LIBRANPU_HRX_LEN, len) |
-			  (i == n - 1 ? LIBRANPU_HRX_LAST : 0);
+		idx = idx ? idx - 1 : hs.entries - 1;
+		host_entry(idx)->ctrl = LIBRANPU_HRX_DONE |
+			FIELD_PREP(LIBRANPU_HRX_SEG_LEN, hs.seg[i].len) |
+			FIELD_PREP(LIBRANPU_HRX_LEN, len) |
+			(i == n - 1 ? LIBRANPU_HRX_LAST : 0);
 	}
 
 	if (!hs.pending)
 		hs.first = cycles();
-	hs.widx = (hs.widx + n) % h->entries;
+	hs.widx += n;
+	if (hs.widx >= hs.entries)
+		hs.widx -= hs.entries;
 	hs.pending += n;
 	hs.delivered += n;
-	r->stats.host_segs += n;
+	hs.segs += n;
 	hs.nseg = 0;
 	return true;
 }
@@ -116,11 +144,12 @@ static void host_publish(struct wlan_radio *r, bool idle)
 {
 	if (!hs.pending)
 		return;
-	if (!idle && hs.pending < r->mod_frames &&
-	    cycles() - hs.first < r->mod_cycles)
+	if (!idle && hs.pending < hs.mod_frames &&
+	    cycles() - hs.first < hs.mod_cycles)
 		return;
+	r->stats.host_segs = hs.segs;
 	wmb();
-	REG32(r->hrx[0].regs + HRX_PROD) = hs.widx;
+	REG32(hs.regs + HRX_PROD) = hs.widx;
 	WRITE_ONCE(r->delivered, hs.delivered);
 	hs.pending = 0;
 }
@@ -129,10 +158,11 @@ static void host_publish(struct wlan_radio *r, bool idle)
 static int host_take(struct wlan_radio *r, struct spsc_cons *in, u32 st,
 		     int max)
 {
+	u32 avail = spsc_avail(in, 1), i = 0;
 	int n = 0;
 
-	while (n < max && spsc_avail(in, 1)) {
-		struct wlan_rx_msg *m = spsc_peek(in, 0);
+	while (n < max && i < avail) {
+		struct wlan_rx_msg *m = spsc_peek(in, i);
 
 		if (st == WLAN_STOPPING) {
 			if (!host_drop(r, m->id))
@@ -147,16 +177,19 @@ static int host_take(struct wlan_radio *r, struct spsc_cons *in, u32 st,
 		} else {
 			hs.seg[hs.nseg++] = *m;
 		}
-		spsc_release(in, 1);
+		i++;
 		n++;
 		if (hs.nseg && (hs.seg[hs.nseg - 1].info & WRX_LAST) &&
 		    !host_deliver(r))
 			break;
+		if (i == avail)
+			avail = spsc_avail(in, i + 1);
 	}
-
+	/* the messages are copied: their slots go back at once */
+	if (i)
+		spsc_release(in, i);
 	return n;
 }
-
 int wlan_host_task(struct task *t, int budget)
 {
 	struct wlan_radio *r = t->ctx;
