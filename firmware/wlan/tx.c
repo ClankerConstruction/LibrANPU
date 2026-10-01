@@ -31,6 +31,18 @@
 #define TXF_ID			GENMASK(14, 0)
 #define TXF_HDR_LEN		8
 
+struct tx_ring {
+	u32 desc;
+	u32 entries;
+	u32 regs;
+};
+
+struct tx_host_ring {
+	const u8 *base;			/* cached view */
+	u32 entries;
+	u32 regs;
+};
+
 struct tx_state {
 	u32 epoch;
 	bool started;
@@ -43,25 +55,45 @@ struct tx_state {
 	u32 fhole[WLAN_BANDS];		/* the one slot without a buffer */
 	u32 hf_widx;			/* host tx free ring */
 	u32 hf_cons;			/* its host index, last read */
+	/* the radio's counters */
+	u32 descs[WLAN_BANDS];
+	u32 events[WLAN_BANDS];
+	u32 txfree_npu;
+	u32 txfree_host;
+	/* fixed per attach */
+	struct tx_ring tx[WLAN_BANDS];
+	struct tx_host_ring htx[WLAN_BANDS];
+	struct tx_ring txf[WLAN_BANDS];
+	u32 txf_arm[WLAN_BANDS];
+	u32 hf_base;
+	u32 hf_entries;
+	u32 hf_regs;
 };
 
 static struct tx_state ts __hart_local;
 
-static void tx_reset(struct wlan_radio *r)
+static void __attribute__((noinline)) tx_reset(struct wlan_radio *r)
 {
 	u32 b;
 
-	ts.epoch = r->epoch;
-	ts.started = false;
+	ts = (struct tx_state){ .epoch = r->epoch };
 	for (b = 0; b < WLAN_BANDS; b++) {
-		ts.cons[b] = 0;
-		ts.put[b] = 0;
+		ts.tx[b] = (struct tx_ring){ r->tx[b].desc, r->tx[b].entries,
+					     r->tx[b].regs };
+		ts.htx[b] = (struct tx_host_ring){
+			plat_cached((void *)(uintptr_t)r->htx[b].base),
+			r->htx[b].entries, r->htx[b].regs };
+		ts.txf[b] = (struct tx_ring){ r->txfree[b].desc,
+					      r->txfree[b].entries,
+					      r->txfree[b].regs };
+		ts.txf_arm[b] = r->txfree_arm[b];
 	}
+	ts.hf_base = r->htxf.base;
+	ts.hf_entries = r->htxf.entries;
+	ts.hf_regs = r->htxf.regs;
 	lan_reset(r);
-	ts.hf_widx = 0;
-	ts.hf_cons = 0;
-	if (r->htxf.base)
-		REG32(r->htxf.regs + TXF_PROD) = 0;
+	if (ts.hf_base)
+		REG32(ts.hf_regs + TXF_PROD) = 0;
 }
 
 static void tx_begin(struct wlan_radio *r)
@@ -72,28 +104,61 @@ static void tx_begin(struct wlan_radio *r)
 		ts.head[b] = r->tx_start[b];
 		ts.tail[b] = r->tx_start[b];
 		ts.fhole[b] = r->txfree_start[b];
-		ts.fidx[b] = (ts.fhole[b] + 1) % MAX(r->txfree[b].entries, 1);
+		ts.fidx[b] = ts.fhole[b] + 1 >= ts.txf[b].entries ? 0 :
+			     ts.fhole[b] + 1;
 	}
 	ts.started = true;
 }
 
-static inline u32 ring_next(const struct wlan_ring *w, u32 i)
+/* counters the radio shows, once per pass */
+static void tx_publish(struct wlan_radio *r)
+{
+	struct libranpu_wlan_tx_stats *s = &r->txstats;
+	u32 b;
+
+	for (b = 0; b < WLAN_BANDS; b++) {
+		s->descs[b] = ts.descs[b];
+		s->txfree_events[b] = ts.events[b];
+	}
+	s->txfree_npu = ts.txfree_npu;
+	s->txfree_host = ts.txfree_host;
+	lan_publish(r);
+}
+
+static inline u32 ring_next(const struct tx_ring *w, u32 i)
 {
 	return i + 1 == w->entries ? 0 : i + 1;
 }
 
+/* entries from tail to head of a ring of n */
+static inline u32 ring_used(u32 head, u32 tail, u32 n)
+{
+	return head >= tail ? head - tail : n - tail + head;
+}
+
+/* an index the host wrote, not trusted past the ring */
+static inline u32 ring_idx(u32 v, u32 n)
+{
+	return likely(v < n) ? v : v % n;
+}
+
 /* slots the chip gave back since the last look; SRAM reads only */
-static u32 tx_inflight(struct wlan_ring *w, u32 b)
+static u32 tx_inflight(const struct tx_ring *w, u32 b)
 {
 	while (ts.tail[b] != ts.head[b] &&
 	       (REG32(w->desc + 16 * ts.tail[b] + 4) & WLAN_TX_DESC_DONE))
 		ts.tail[b] = ring_next(w, ts.tail[b]);
-	return (ts.head[b] + w->entries - ts.tail[b]) % w->entries;
+	return ring_used(ts.head[b], ts.tail[b], w->entries);
+}
+
+u32 wlan_tx_ring(u32 b)
+{
+	return ts.tx[b].desc;
 }
 
 u32 wlan_tx_room(struct wlan_radio *r, u32 b)
 {
-	struct wlan_ring *w = &r->tx[b];
+	const struct tx_ring *w = &ts.tx[b];
 	s32 room = w->entries - 1 - TX_RESERVE - tx_inflight(w, b);
 
 	return room > 0 ? room : 0;
@@ -102,7 +167,7 @@ u32 wlan_tx_room(struct wlan_radio *r, u32 b)
 /* one descriptor; control word last, again if the chip's late done won */
 void wlan_tx_put(struct wlan_radio *r, u32 b, u32 w0, u32 ctrl, u32 w2, u32 w3)
 {
-	struct wlan_ring *w = &r->tx[b];
+	const struct tx_ring *w = &ts.tx[b];
 	u32 d = w->desc + 16 * ts.head[b];
 
 	ctrl &= ~WLAN_TX_DESC_DONE;
@@ -120,7 +185,7 @@ void wlan_tx_put(struct wlan_radio *r, u32 b, u32 w0, u32 ctrl, u32 w2, u32 w3)
 }
 
 /* the chip's cpu index, once per pass */
-static void tx_kick(struct wlan_radio *r)
+static void tx_kick(void)
 {
 	u32 b;
 
@@ -128,19 +193,18 @@ static void tx_kick(struct wlan_radio *r)
 		if (!ts.put[b])
 			continue;
 		wmb();
-		REG32(r->tx[b].regs + 8) = ts.head[b];
+		REG32(ts.tx[b].regs + 8) = ts.head[b];
 		ts.put[b] = 0;
 	}
 }
 
 static u32 tx_band(struct wlan_radio *r, u32 b, u32 budget)
 {
-	struct wlan_host_ring *h = &r->htx[b];
-	const u8 *base = plat_cached((void *)(uintptr_t)h->base);
-	u32 prod, avail, room, n;
+	const struct tx_host_ring *h = &ts.htx[b];
+	u32 prod, avail, room, n, cons = ts.cons[b];
 
-	prod = REG32(h->regs + HTX_PROD) % h->entries;
-	avail = (prod + h->entries - ts.cons[b]) % h->entries;
+	prod = ring_idx(REG32(h->regs + HTX_PROD), h->entries);
+	avail = ring_used(prod, cons, h->entries);
 	if (!avail)
 		return 0;
 	room = wlan_tx_room(r, b);
@@ -151,23 +215,25 @@ static u32 tx_band(struct wlan_radio *r, u32 b, u32 budget)
 
 	n = MIN(MIN(avail, room), budget);
 	for (u32 i = 0; i < n; i++) {
-		const volatile u32 *e = (const u32 *)(base + 16 * ts.cons[b]);
+		const volatile u32 *e = (const u32 *)(h->base + 16 * cons);
 
 		/* the host may have added entries to this line since */
 		if (!i || !((uintptr_t)e & (LINE - 1)))
 			plat_dcache_inv((const void *)((uintptr_t)e & ~(LINE - 1)));
 		wlan_tx_put(r, b, e[0], e[1], e[2], e[3]);
-		ts.cons[b] = (ts.cons[b] + 1) % h->entries;
+		if (++cons == h->entries)
+			cons = 0;
 	}
 
+	ts.cons[b] = cons;
 	wmb();
-	REG32(h->regs + HTX_CONS) = ts.cons[b];
-	r->txstats.descs[b] += n;
+	REG32(h->regs + HTX_CONS) = cons;
+	ts.descs[b] += n;
 	return n;
 }
 
 /* the empty slot gets buf, control word last */
-static void txf_rearm(struct wlan_ring *w, u32 slot, u32 buf, u32 arm)
+static void txf_rearm(const struct tx_ring *w, u32 slot, u32 buf, u32 arm)
 {
 	volatile u32 *d = (u32 *)(w->desc + 16 * slot);
 
@@ -178,46 +244,43 @@ static void txf_rearm(struct wlan_ring *w, u32 slot, u32 buf, u32 arm)
 	d[1] = arm;
 }
 
-static u32 txf_room(struct wlan_radio *r)
+static u32 txf_room(void)
 {
-	struct wlan_host_ring *h = &r->htxf;
-	u32 room = (ts.hf_cons + h->entries - ts.hf_widx - 1) % h->entries;
+	u32 n = ts.hf_entries, room = n - 1 - ring_used(ts.hf_widx, ts.hf_cons, n);
 
-	if (room < h->entries / 2) {
-		ts.hf_cons = REG32(h->regs + TXF_CONS) % h->entries;
-		room = (ts.hf_cons + h->entries - ts.hf_widx - 1) % h->entries;
+	if (room < n / 2) {
+		ts.hf_cons = ring_idx(REG32(ts.hf_regs + TXF_CONS), n);
+		room = n - 1 - ring_used(ts.hf_widx, ts.hf_cons, n);
 	}
 	return room;
 }
 
-static void txf_put(struct wlan_radio *r, u32 kind, u32 token, u32 wcid,
-		    u32 count, u32 failed)
+static void txf_word2(u32 w0, u32 w1)
 {
-	struct wlan_host_ring *h = &r->htxf;
-	volatile u32 *e = (u32 *)(h->base + 8 * ts.hf_widx);
+	volatile u32 *e = (u32 *)(ts.hf_base + 8 * ts.hf_widx);
 
-	e[0] = token | wcid << 16;
-	e[1] = kind | count << 8 | failed << 16;
-	ts.hf_widx = ts.hf_widx + 1 == h->entries ? 0 : ts.hf_widx + 1;
+	e[0] = w0;
+	e[1] = w1;
+	if (++ts.hf_widx == ts.hf_entries)
+		ts.hf_widx = 0;
+}
+
+static void txf_put(u32 kind, u32 token, u32 wcid, u32 count, u32 failed)
+{
+	txf_word2(token | wcid << 16, kind | count << 8 | failed << 16);
 }
 
 /* another report on the ring (tx status, events): as it came */
 static bool txf_other(struct wlan_radio *r, u32 b, const volatile u32 *ev,
 		      u32 len)
 {
-	struct wlan_host_ring *h = &r->htxf;
 	u32 i, n = (len + 7) / 8, words = (len + 3) / 4;
 
-	if (txf_room(r) < n + 1)
+	if (txf_room() < n + 1)
 		return false;
-	txf_put(r, LIBRANPU_TXFREE_EVENT, len, b, 0, 0);
-	for (i = 0; i < n; i++) {
-		volatile u32 *e = (u32 *)(h->base + 8 * ts.hf_widx);
-
-		e[0] = ev[2 * i];
-		e[1] = 2 * i + 1 < words ? ev[2 * i + 1] : 0;
-		ts.hf_widx = ts.hf_widx + 1 == h->entries ? 0 : ts.hf_widx + 1;
-	}
+	txf_put(LIBRANPU_TXFREE_EVENT, len, b, 0, 0);
+	for (i = 0; i < n; i++)
+		txf_word2(ev[2 * i], 2 * i + 1 < words ? ev[2 * i + 1] : 0);
 	r->txstats.txfree_other++;
 	return true;
 }
@@ -243,7 +306,7 @@ static bool txf_report(struct wlan_radio *r, u32 b, const volatile u32 *ev,
 		r->txstats.txfree_bad++;
 		return true;
 	}
-	if (txf_room(r) < 2 * words)
+	if (txf_room() < 2 * words)
 		return false;
 
 	total = FIELD_GET(TXF_MSDUS, ev[0]);
@@ -260,7 +323,7 @@ static bool txf_report(struct wlan_radio *r, u32 b, const volatile u32 *ev,
 		if (v & TXF_HEADER) {
 			if (wcid == LIBRANPU_TXFREE_NO_WCID)
 				continue;
-			txf_put(r, LIBRANPU_TXFREE_STATUS, 0, wcid,
+			txf_put(LIBRANPU_TXFREE_STATUS, 0, wcid,
 				FIELD_GET(TXF_COUNT, v), !!FIELD_GET(TXF_STAT, v));
 			lan_delay(r, wcid, FIELD_GET(TXF_DELAY, v));
 			continue;
@@ -272,11 +335,11 @@ static bool txf_report(struct wlan_radio *r, u32 b, const volatile u32 *ev,
 				continue;
 			seen++;
 			if (lan_token_free(r, id)) {
-				r->txstats.txfree_npu++;
+				ts.txfree_npu++;
 				continue;
 			}
-			txf_put(r, LIBRANPU_TXFREE_TOKEN, id, wcid, 0, 0);
-			r->txstats.txfree_host++;
+			txf_put(LIBRANPU_TXFREE_TOKEN, id, wcid, 0, 0);
+			ts.txfree_host++;
 		}
 	}
 	return true;
@@ -290,42 +353,43 @@ static bool txf_report(struct wlan_radio *r, u32 b, const volatile u32 *ev,
  */
 static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 {
-	struct wlan_ring *w = &r->txfree[b];
-	u32 n = 0, idx = ts.fidx[b];
+	const struct tx_ring *w = &ts.txf[b];
+	u32 n = 0, idx = ts.fidx[b], max = FIELD_GET(WLAN_RX_DESC_LEN, ts.txf_arm[b]);
 
 	while (n < budget) {
 		volatile u32 *d = (u32 *)(w->desc + 16 * idx);
 		u32 ctrl = d[1], len = FIELD_GET(WLAN_RX_DESC_LEN, ctrl);
-		uintptr_t o;
+		u32 buf = d[0];
 		const u8 *ev;
 
 		if (!(ctrl & WLAN_TX_DESC_DONE))
 			break;
-		ev = plat_host_ptr(d[0], len);
-		if (!(ctrl & WLAN_RX_DESC_LAST) || !ev ||
-		    len > FIELD_GET(WLAN_RX_DESC_LEN, r->txfree_arm[b])) {
+		ev = plat_host_ptr(buf, len);
+		if (!(ctrl & WLAN_RX_DESC_LAST) || !ev || len > max) {
 			r->txstats.txfree_bad++;
 		} else {
+			uintptr_t l;
+
 			ev = plat_cached((void *)ev);
 			/* every line the report touches, wherever it starts */
-			for (o = (uintptr_t)ev & ~(LINE - 1);
-			     o < (uintptr_t)ev + len; o += LINE)
-				plat_dcache_inv((const void *)o);
+			for (l = (uintptr_t)ev & ~(LINE - 1);
+			     l < (uintptr_t)ev + len; l += LINE)
+				plat_dcache_inv((const void *)l);
 			if (!txf_report(r, b, (const volatile u32 *)ev, len)) {
 				r->txstats.txfree_full++;
 				break;
 			}
-			r->txstats.txfree_events[b]++;
+			ts.events[b]++;
 		}
-		txf_rearm(w, ts.fhole[b], d[0], r->txfree_arm[b]);
+		txf_rearm(w, ts.fhole[b], buf, ts.txf_arm[b]);
 		ts.fhole[b] = idx;
-		idx = idx + 1 == w->entries ? 0 : idx + 1;
+		idx = ring_next(w, idx);
 		n++;
 	}
 	if (n) {
 		ts.fidx[b] = idx;
 		wmb();
-		REG32(r->htxf.regs + TXF_PROD) = ts.hf_widx;
+		REG32(ts.hf_regs + TXF_PROD) = ts.hf_widx;
 		REG32(w->regs + 8) = ts.fhole[b];
 	}
 	return n;
@@ -336,7 +400,7 @@ static u32 txf_all(struct wlan_radio *r, u32 budget)
 	u32 b, n = 0;
 
 	for (b = 0; b < WLAN_BANDS; b++)
-		if (r->txfree[b].desc)
+		if (ts.txf[b].desc)
 			n += txf_ring(r, b, budget);
 	return n;
 }
@@ -347,13 +411,13 @@ static bool tx_drained(struct wlan_radio *r)
 	u32 b, chip = 0, host = 0;
 
 	for (b = 0; b < WLAN_BANDS; b++) {
-		struct wlan_host_ring *h = &r->htx[b];
+		const struct tx_host_ring *h = &ts.htx[b];
 
-		if (!r->tx[b].desc)
+		if (!ts.tx[b].desc)
 			continue;
-		chip += tx_inflight(&r->tx[b], b);
-		host += (REG32(h->regs + HTX_PROD) % h->entries + h->entries -
-			 ts.cons[b]) % h->entries;
+		chip += tx_inflight(&ts.tx[b], b);
+		host += ring_used(ring_idx(REG32(h->regs + HTX_PROD), h->entries),
+				  ts.cons[b], h->entries);
 	}
 	r->audit.tx_chip = chip;
 	r->audit.tx_host = host;
@@ -380,8 +444,11 @@ int wlan_tx_task(struct task *t, int budget)
 	n = txf_all(r, (u32)budget * 8);
 	if (st == WLAN_STOPPING) {
 		lan_stop(r);
+		if (n)
+			tx_publish(r);
 		if (tx_drained(r) || READ_ONCE(r->no_drain)) {
 			r->audit.lan_tokens = lan_in_chip(r);
+			tx_publish(r);
 			WRITE_ONCE(r->ack[WT_TX], st);
 		}
 		return n;
@@ -392,10 +459,12 @@ int wlan_tx_task(struct task *t, int budget)
 	if (ts.lan_first)
 		n += lan_drain(r, (u32)budget * TX_BATCH);
 	for (b = 0; b < WLAN_BANDS; b++)
-		if (r->tx[b].desc)
+		if (ts.tx[b].desc)
 			n += tx_band(r, b, (u32)budget * TX_BATCH);
 	if (!ts.lan_first)
 		n += lan_drain(r, (u32)budget * TX_BATCH);
-	tx_kick(r);
+	tx_kick();
+	if (n)
+		tx_publish(r);
 	return n;
 }

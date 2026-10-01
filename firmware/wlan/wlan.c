@@ -500,6 +500,8 @@ static int wlan_aqm(struct cmd_ctx *c)
 		a->small = q->small;
 		wmb();
 		a->on = q->on;
+		wmb();
+		wlan_radio.aqm_gen++;
 	}
 	memset(o, 0, sizeof(*o));
 	o->on = a->on;

@@ -39,7 +39,14 @@
 #define TXP_NBUF_1		BIT(24)
 #define LAN_TX_CTRL		0x004C4048	/* 76-byte TXD + TXP, 72-byte head */
 
-static u32 ridx[WLAN_LAN_RINGS] __hart_local;
+/* tx task: the attach's LAN state, its token pool and counters */
+static struct {
+	struct wlan_lan l;
+	u32 ridx[WLAN_LAN_RINGS];
+	struct aqm_cfg aqm;
+	u32 aqm_gen;
+	u32 frames[WLAN_LAN_RINGS];
+} ls __hart_local;
 
 static u32 tok_bus(const struct wlan_lan *l, u32 t)
 {
@@ -145,8 +152,26 @@ void lan_reset(struct wlan_radio *r)
 {
 	u32 k;
 
+	ls.l = r->lan;
+	for (k = 0; k < WLAN_LAN_RINGS; k++) {
+		ls.ridx[k] = ls.l.start[k];
+		ls.frames[k] = 0;
+	}
+	ls.aqm_gen = READ_ONCE(r->aqm_gen);
+	rmb();
+	ls.aqm = r->aqm;
+}
+
+/* counters and the free token count, once per tx pass */
+void lan_publish(struct wlan_radio *r)
+{
+	u32 k;
+
+	if (!ls.l.tokens)
+		return;
 	for (k = 0; k < WLAN_LAN_RINGS; k++)
-		ridx[k] = r->lan.start[k];
+		r->txstats.lan_frames[k] = ls.frames[k];
+	r->lan.free.top = ls.l.free.top;
 }
 
 /* no more frames from the frame engine: its rings go with the detach */
@@ -159,7 +184,7 @@ void lan_stop(struct wlan_radio *r)
 /* a report for a token the chip does not hold would free it twice */
 bool lan_token_free(struct wlan_radio *r, u32 id)
 {
-	struct wlan_lan *l = &r->lan;
+	struct wlan_lan *l = &ls.l;
 	u16 w;
 
 	if (id >= l->tokens)
@@ -179,13 +204,13 @@ bool lan_token_free(struct wlan_radio *r, u32 id)
 /* the chip's time in it, in ms, for a group of a station's frames */
 void lan_delay(struct wlan_radio *r, u32 wcid, u32 ms)
 {
-	if (r->lan.tokens && wcid < AQM_STAS)
-		aqm_report(&r->aqm, &r->lan.sta[wcid], ms);
+	if (ls.l.tokens && wcid < AQM_STAS)
+		aqm_report(&ls.aqm, &ls.l.sta[wcid], ms);
 }
 
 u32 lan_in_chip(struct wlan_radio *r)
 {
-	struct wlan_lan *l = &r->lan;
+	struct wlan_lan *l = &ls.l;
 
 	if (!l->tokens)
 		return 0;
@@ -199,7 +224,7 @@ u32 lan_in_chip(struct wlan_radio *r)
  */
 static bool lan_frame(struct wlan_radio *r, u32 k, u32 i, u32 now)
 {
-	struct wlan_lan *l = &r->lan;
+	struct wlan_lan *l = &ls.l;
 	volatile u32 *d = (u32 *)(l->desc[k] + LAN_DESC * i);
 	u32 len = FIELD_GET(RXD_LEN, d[1]), w4 = d[4], w6 = d[6];
 	u32 b = FIELD_GET(RXD_BAND, w4), t = l->slot_tok[k][i], bus;
@@ -209,13 +234,13 @@ static bool lan_frame(struct wlan_radio *r, u32 k, u32 i, u32 now)
 	volatile u32 *txp;
 	u16 next;
 
-	if (!len || len > LAN_BUF_LEN || !r->tx[b].desc) {
+	if (!len || len > LAN_BUF_LEN || !wlan_tx_ring(b)) {
 		r->txstats.lan_bad++;
 		slot_arm(l, k, i, t);
 		return true;
 	}
 	if (s)
-		v = aqm_decide(&r->aqm, s, len, now);
+		v = aqm_decide(&ls.aqm, s, len, now);
 	if (v != AQM_PASS) {
 		if (v == AQM_LIMIT)
 			r->txstats.lan_limit_drops++;
@@ -246,17 +271,26 @@ static bool lan_frame(struct wlan_radio *r, u32 k, u32 i, u32 now)
 	l->tok_sta[t] = s ? wcid : AQM_NONE;
 	if (s)
 		aqm_sent(s, t, now);
-	r->txstats.lan_frames[k]++;
+	ls.frames[k]++;
 	return true;
 }
 
 u32 lan_drain(struct wlan_radio *r, u32 budget)
 {
-	struct wlan_lan *l = &r->lan;
-	u32 k, n, all = 0, now = cycles();
+	struct wlan_lan *l = &ls.l;
+	u32 k, n, all = 0, now = cycles(), gen;
 
-	for (k = 0; k < WLAN_LAN_RINGS && l->tokens; k++) {
-		u32 i = ridx[k];
+	if (!l->tokens)
+		return 0;
+	/* control changed the limit: take the new one whole */
+	gen = READ_ONCE(r->aqm_gen);
+	if (gen != ls.aqm_gen) {
+		rmb();
+		ls.aqm = r->aqm;
+		ls.aqm_gen = gen;
+	}
+	for (k = 0; k < WLAN_LAN_RINGS; k++) {
+		u32 i = ls.ridx[k];
 
 		for (n = 0; n < budget; n++) {
 			volatile u32 *d = (u32 *)(l->desc[k] + LAN_DESC * i);
@@ -267,7 +301,7 @@ u32 lan_drain(struct wlan_radio *r, u32 budget)
 		}
 		if (!n)
 			continue;
-		ridx[k] = i;
+		ls.ridx[k] = i;
 		wmb();
 		/* the frame engine may fill up to the last slot we took */
 		REG32(TDMA_RX(k) + 8) = i ? i - 1 : WLAN_LAN_RING - 1;

@@ -127,6 +127,7 @@ struct wlan_radio {
 	struct wlan_host_ring htxf;	/* tx free records to the host */
 	struct wlan_lan lan;
 	struct aqm_cfg aqm;		/* control writes, tx task reads */
+	u32 aqm_gen;			/* bumped after each aqm change */
 	u32 tx_start[WLAN_BANDS];	/* chip dma index at start */
 	bool tx_on;
 	u32 mod_frames;
@@ -153,7 +154,8 @@ int wlan_buf_task(struct task *t, int budget);
 int wlan_host_task(struct task *t, int budget);
 int wlan_tx_task(struct task *t, int budget);
 
-/* tx task: band b's chip ring */
+/* tx task: band b's chip ring, 0 if none */
+u32 wlan_tx_ring(u32 b);
 u32 wlan_tx_room(struct wlan_radio *r, u32 b);
 void wlan_tx_put(struct wlan_radio *r, u32 b, u32 w0, u32 ctrl, u32 w2, u32 w3);
 
@@ -161,6 +163,7 @@ void wlan_tx_put(struct wlan_radio *r, u32 b, u32 w0, u32 ctrl, u32 w2, u32 w3);
 int lan_attach(struct wlan_radio *r, u32 base, u32 tokens);
 void lan_start(struct wlan_radio *r);
 void lan_reset(struct wlan_radio *r);
+void lan_publish(struct wlan_radio *r);
 void lan_stop(struct wlan_radio *r);
 u32 lan_drain(struct wlan_radio *r, u32 budget);
 bool lan_token_free(struct wlan_radio *r, u32 id);
