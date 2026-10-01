@@ -470,6 +470,7 @@ static void test_reset(void)
 #define RING_TBL	0x89079000	/* the attach's ring table */
 #define TXFD_BASE	0x89072000	/* host tx free rings, per band */
 #define TXFB_BASE	0x8C000000	/* their 2 KB buffers */
+#define TXFB_OFS1	40		/* band 1's start inside a line */
 #define TXF_BUF64	27		/* 1728 bytes armed */
 #define TXF_DIDX0	3
 #define LAN_POOL	0x8C800000	/* NPU token buffers */
@@ -1031,7 +1032,8 @@ static void wlan_session(u32 frames, bool force, u32 nheld, bool stall)
 		volatile u32 *d = (u32 *)(TXFD_BASE + 16 * i);
 		bool hole = i % TXF_ENTRIES == TXF_DIDX0 - 1;
 
-		d[0] = hole ? 0 : TXFB_BASE + 2048 * i;
+		d[0] = hole ? 0 : TXFB_BASE + 2048 * i +
+				  (i >= TXF_ENTRIES ? TXFB_OFS1 : 0);
 		d[1] = hole ? BIT(31) : TXF_BUF64 * 64 << 16;
 		d[2] = d[3] = 0;
 	}
