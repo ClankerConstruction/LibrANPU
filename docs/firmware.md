@@ -1,6 +1,7 @@
 # Firmware
 
-One image per SoC. RV32IMAC harts, code in DRAM, `.data`/`.bss` and the debug block in cluster SRAM.
+One image per SoC. RV32IMAC harts, code and task-private state in DRAM, `.data`/`.bss` and the debug
+block in cluster SRAM.
 
 ## Layers
 
@@ -23,8 +24,9 @@ sequenceDiagram
   participant Hn as harts 1..N
   H->>H0: MIB10 = boot block, trigger
   H0->>H0: read MIB10, reset NPU bus (3M cycles)
-  Hn->>Hn: spin on mcycle 6M cycles (no bus access)
-  H0->>H0: clear bss, debug block, arenas, mailbox routing
+  H0->>H0: drop own .bss.hart lines (FC2)
+  Hn->>Hn: drop own .bss.hart lines (FC2), spin on mcycle 6M cycles (no bus access)
+  H0->>H0: clear bss, .bss.hart (uncached alias), debug block, arenas, mailbox routing
   H0->>H: check boot block (magic, ABI), open rings
   H0->>H0: core map: task lists per hart
   H0->>Hn: boot_gate = 1
@@ -37,13 +39,16 @@ The host reads no NPU register between the trigger and `ready`: the bus reset wo
 ## Execution
 
 - A hart runs its tasks round robin: `int run(struct task *, int budget)` returns work done.
-- Per task in the debug block: passes, work, busy and idle cycles (64-bit), errors.
+- Per task in the debug block: passes, work, busy and idle cycles (64-bit), errors. The runner keeps
+  the task table and the counters on its own stack and only stores to the record: no shared load per
+  pass.
 - Park: hart 0 sets a flag, the hart parks at the top of its loop (`wfi`, interrupts off).
 
 | hart | tasks |
 |---|---|
 | 0 | `ctl` (commands, event flush), `health` (faults, stalls), `dbg` |
 | 1 | `rx`: RXDMAD_C walk, to the PPE or the host task (WLAN) |
+| 2 | `tx`: host tx descriptors, LAN to WiFi, tx free reports (WLAN) |
 | 3 | `host`: host rx ring, interrupt moderation (WLAN) |
 | 4 | `buf`: id pool, rx ring refill, host return ring, PPE return FIFO (WLAN) |
 | 1..5 | `dbg` (probe target) |
@@ -55,6 +60,32 @@ The host reads no NPU register between the trigger and `ready`: the bus reset wo
 - Arena: first-fit block table (64 blocks), zeroed blocks, freed per owner (radio, service). Only
   hart 0 allocates. Two arenas: NPU SRAM and cluster SRAM above `.bss`.
 - D-caches are per hart and not coherent: state two harts touch stays in SRAM.
+
+### Where state lives
+
+| state | place | load cost (cycles) | rule |
+|---|---|---|---|
+| a task's own state (indices, SPSC handles, id pools it owns, ring geometry, counters) | `__hart_local`: `.bss.hart`, cached DRAM | ~10 hit | one hart only; each object on its own 64-byte lines |
+| state another hart or the host reads (radio state, acks, stats, `delivered`) | `.bss`, cluster SRAM | 17 | written by one task, read by others |
+| SPSC rings, descriptors, id stacks, per-station limits | NPU SRAM (arena) | 18 | shared or chip-visible |
+| host rings and buffers | host DRAM | 98 uncached, ~10 cached after `FC2` | cached only per the line-op rules |
+
+```mermaid
+flowchart LR
+  A["attach (hart 0): radio config, rings, pools in SRAM"] -->|"epoch++"| R["task reset: copy what it uses into .bss.hart"]
+  R --> P["pass: works on its copy; counters kept locally"]
+  P -->|"stores only, once per pass"| S["radio stats (cluster SRAM)"]
+  C["control: AQM set"] -->|"aqm_gen++"| P
+```
+
+- A task copies what attach fixed (ring geometry, pool, moderation) at its reset, and takes the id
+  pool it owns from then on. Control changes after attach reach it by a generation count
+  (`aqm_gen`) or by a flag read once per pass (force host).
+- Counters the host reads are kept in the task's state and stored, never loaded and incremented.
+- SPSC handles keep the ring's mask, entry shift and base; a batch writes slot `k` only while
+  `spsc_room(p, k + 1) > k`, and publishes once (rx: every 16 entries and at the pass end).
+- Ring indices wrap by compare: rings need not be powers of two, and the host's index is reduced
+  only when out of range. No division on a per-frame path.
 
 ## WLAN datapath (`rro31`, MT7990/MT7992)
 

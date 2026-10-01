@@ -2,7 +2,7 @@
 
 | level | run | covers |
 |---|---|---|
-| unit | `make -C tests/unit` (gcc -m32, UBSan) | arena, SPSC (incl. 2M entries across two threads), formatter |
+| unit | `make -C tests/unit` (gcc -m32, UBSan) | arena, SPSC (incl. 2M entries across two threads, batch room), id pool, per-station limit, formatter; tests rebuild when a firmware header changes |
 | QEMU | `tests/qemu/run.sh` | the QEMU image on 6 harts + a host model hart: load, boot, commands, burst of 96, errors, peek/poke, faults, probes, reset; WLAN with a chip model and a frame engine model (descriptors, pad, bind 1 in 3, FIFO), both bands, chains, indication reasons, stats, stop audit, re-attach, force host |
 | DUT | by hand on the DUT | boot, reload loops, probes, command latency |
 
@@ -19,7 +19,12 @@ flowchart LR
   `0x8E900000` and `0x8EC00000`, so the host model uses the real register offsets.
 - A locked PMP entry makes `0xF0000000+` fault, for the fault-catching paths.
 - The hart wake source is the CLINT software interrupt; `wfi` really sleeps.
-- QEMU timing is not the NPU's; the harness checks logic and ordering only.
+- QEMU timing is not the NPU's; the harness checks logic and ordering only. Checks do not depend on
+  how fast the firmware runs against the host model (they hold with every firmware access instrumented).
+- There is no cache: `plat_dcache_inv`/`plat_dcache_wb_inv` store the line address to
+  `0x8EC13100`/`0x8EC13104`, so an instrumented QEMU can model the D-cache and catch stale reads.
+  `run.sh` passes its arguments to QEMU (e.g. `-plugin file=...`).
+- Band 1's tx free report buffers start 40 bytes into a line: reports cross lines.
 
 ## DUT results (AN7583, 720 MHz)
 
