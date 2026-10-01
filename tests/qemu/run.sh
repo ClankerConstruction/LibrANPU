@@ -1,5 +1,5 @@
 #!/bin/sh
-# run.sh: boot the QEMU image with the host model, exit 0 on PASS
+# run.sh [qemu args]: boot the QEMU image with the host model, exit 0 on PASS
 set -e
 cd "$(dirname "$0")"
 make -s
@@ -13,4 +13,4 @@ exec timeout ${TIMEOUT:-60} qemu-system-riscv32 -M virt -cpu rv32 -smp 7 -m 256M
 	-device loader,file=build/bootrom.bin,addr=0x8F000000,force-raw=on \
 	-device loader,file=$IMG,addr=0x8A000000,force-raw=on \
 	-device loader,file=build/host.elf,cpu-num=6 \
-	$LOADERS
+	$LOADERS "$@"

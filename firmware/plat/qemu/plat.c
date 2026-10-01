@@ -5,6 +5,9 @@
 #include "plat/plat.h"
 
 #define CLINT_MSIP(h)		(QEMU_CLINT + 4 * (h))
+/* no cache here: line ops are logged for a cost model to see */
+#define CACHE_OP_INV		NPU_REG(0x13100)
+#define CACHE_OP_WB_INV		NPU_REG(0x13104)
 
 u32 plat_boot_block_addr(void)
 {
@@ -39,12 +42,12 @@ void *plat_uncached(void *p)
 
 void plat_dcache_inv(const void *line)
 {
-	(void)line;
+	REG32(CACHE_OP_INV) = (uintptr_t)line;
 }
 
 void plat_dcache_wb_inv(const void *line)
 {
-	(void)line;
+	REG32(CACHE_OP_WB_INV) = (uintptr_t)line;
 }
 
 u32 plat_cpu_mhz(void)
