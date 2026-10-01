@@ -28,7 +28,7 @@
 static struct {
 	u32 epoch;
 	struct spsc_prod host;
-} ps;
+} ps __hart_local;
 
 int ppe_attach(struct wlan_radio *r)
 {

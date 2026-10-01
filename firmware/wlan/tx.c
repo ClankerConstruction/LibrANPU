@@ -45,7 +45,7 @@ struct tx_state {
 	u32 hf_cons;			/* its host index, last read */
 };
 
-static struct tx_state ts;
+static struct tx_state ts __hart_local;
 
 static void tx_reset(struct wlan_radio *r)
 {

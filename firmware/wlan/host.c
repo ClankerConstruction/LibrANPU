@@ -27,7 +27,7 @@ struct host_state {
 	bool full;			/* the host ring was full last time */
 };
 
-static struct host_state hs;
+static struct host_state hs __hart_local;
 
 static void host_reset(struct wlan_radio *r)
 {

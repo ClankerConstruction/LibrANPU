@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /*
- * Code, rodata, stacks and scratch in DRAM; data and bss in cluster
- * SRAM below the debug block.
+ * Code, rodata, stacks, hart-private state and scratch in DRAM; data
+ * and bss in cluster SRAM below the debug block.
  */
 #include "soc.h"
 #include "map.h"
@@ -32,6 +32,14 @@ SECTIONS
 
 	. = ALIGN(8);
 	__code_end = .;
+
+	/* before .bss: its input sections match .bss.* too */
+	.hart (NOLOAD) : ALIGN(64) {
+		__hart_start = .;
+		*(.bss.hart)
+		. = ALIGN(64);
+		__hart_end = .;
+	} > DRAM
 
 	.data : ALIGN(8) {
 		__data_start = .;

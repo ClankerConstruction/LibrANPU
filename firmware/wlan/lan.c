@@ -39,7 +39,7 @@
 #define TXP_NBUF_1		BIT(24)
 #define LAN_TX_CTRL		0x004C4048	/* 76-byte TXD + TXP, 72-byte head */
 
-static u32 ridx[WLAN_LAN_RINGS];
+static u32 ridx[WLAN_LAN_RINGS] __hart_local;
 
 static u32 tok_bus(const struct wlan_lan *l, u32 t)
 {

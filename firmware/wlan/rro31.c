@@ -32,7 +32,7 @@ struct rx_state {
 	bool chain;			/* inside a multi-segment frame */
 };
 
-static struct rx_state rxs;
+static struct rx_state rxs __hart_local;
 
 static void rx_reset(struct wlan_radio *r)
 {

@@ -26,6 +26,11 @@ typedef long long s64;
 #define __aligned(n)		__attribute__((aligned(n)))
 #define __noreturn		__attribute__((noreturn))
 #define __unused		__attribute__((unused))
+/*
+ * State one hart alone touches, in cached DRAM: lines never shared
+ * with another hart, zero at start.
+ */
+#define __hart_local		__section(".bss.hart") __aligned(64)
 #define likely(x)		__builtin_expect(!!(x), 1)
 #define unlikely(x)		__builtin_expect(!!(x), 0)
 

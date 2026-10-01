@@ -12,7 +12,7 @@
 #include "ctl/boot.h"
 #include "dbg/dbg.h"
 
-extern char __bss_start[], __bss_end[];
+extern char __bss_start[], __bss_end[], __hart_start[], __hart_end[];
 
 /* in .data: the host loads it as 0, hart 0 never clears it */
 static volatile u32 boot_gate __section(".data");
@@ -20,6 +20,15 @@ static volatile u32 boot_gate __section(".data");
 /* covers the bus reset; mcycle only, no bus access meanwhile */
 #define RESET_WINDOW_CYCLES	6000000
 #define HARTS_UP_CYCLES		20000000
+
+/* a line the last image left in this hart's D-cache must not come back */
+static void hart_local_drop(void)
+{
+	char *p;
+
+	for (p = __hart_start; p < __hart_end; p += 64)
+		plat_dcache_inv(plat_cached(p));
+}
 
 static u32 wait_harts(void)
 {
@@ -47,6 +56,7 @@ static void __noreturn hart0_start(void)
 	plat_reset_bus();
 
 	memset(__bss_start, 0, __bss_end - __bss_start);
+	memset(plat_uncached(__hart_start), 0, __hart_end - __hart_start);
 	dbg_init();
 	dbg_hart_state(0, LIBRANPU_HART_INIT);
 	arena_init(&npu_sram, NPU_SRAM_BASE, SOC_SRAM_SIZE);
@@ -73,6 +83,7 @@ void __noreturn fw_start(u32 hart)
 {
 	u32 t0;
 
+	hart_local_drop();
 	if (!hart)
 		hart0_start();
 

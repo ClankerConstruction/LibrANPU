@@ -22,7 +22,7 @@ struct buf_state {
 	u32 returned;			/* ids back from the host */
 };
 
-static struct buf_state bs;
+static struct buf_state bs __hart_local;
 
 static void buf_reset(struct wlan_radio *r)
 {
