@@ -50,6 +50,7 @@ struct tx_state {
 	u32 tail[WLAN_BANDS];		/* oldest slot the chip holds */
 	u32 cons[WLAN_BANDS];		/* next host entry */
 	u32 put[WLAN_BANDS];		/* descriptors not published yet */
+	u32 room[WLAN_BANDS];		/* free slots at the last look */
 	bool lan_first;
 	u32 fidx[WLAN_BANDS];		/* next tx free slot */
 	u32 fhole[WLAN_BANDS];		/* the one slot without a buffer */
@@ -156,12 +157,17 @@ u32 wlan_tx_ring(u32 b)
 	return ts.tx[b].desc;
 }
 
+/* looks at the chip's done bits only when the last look ran out */
 u32 wlan_tx_room(struct wlan_radio *r, u32 b)
 {
 	const struct tx_ring *w = &ts.tx[b];
-	s32 room = w->entries - 1 - TX_RESERVE - tx_inflight(w, b);
+	s32 room;
 
-	return room > 0 ? room : 0;
+	if (ts.room[b])
+		return ts.room[b];
+	room = w->entries - 1 - TX_RESERVE - tx_inflight(w, b);
+	ts.room[b] = room > 0 ? room : 0;
+	return ts.room[b];
 }
 
 /* one descriptor; control word last, again if the chip's late done won */
@@ -182,6 +188,7 @@ void wlan_tx_put(struct wlan_radio *r, u32 b, u32 w0, u32 ctrl, u32 w2, u32 w3)
 	}
 	ts.head[b] = ring_next(w, ts.head[b]);
 	ts.put[b]++;
+	ts.room[b]--;
 }
 
 /* the chip's cpu index, once per pass */
