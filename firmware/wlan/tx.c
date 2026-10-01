@@ -295,7 +295,8 @@ static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 
 	while (n < budget) {
 		volatile u32 *d = (u32 *)(w->desc + 16 * idx);
-		u32 ctrl = d[1], len = FIELD_GET(WLAN_RX_DESC_LEN, ctrl), o;
+		u32 ctrl = d[1], len = FIELD_GET(WLAN_RX_DESC_LEN, ctrl);
+		uintptr_t o;
 		const u8 *ev;
 
 		if (!(ctrl & WLAN_TX_DESC_DONE))
@@ -306,8 +307,10 @@ static u32 txf_ring(struct wlan_radio *r, u32 b, u32 budget)
 			r->txstats.txfree_bad++;
 		} else {
 			ev = plat_cached((void *)ev);
-			for (o = 0; o < len; o += LINE)
-				plat_dcache_inv(ev + o);
+			/* every line the report touches, wherever it starts */
+			for (o = (uintptr_t)ev & ~(LINE - 1);
+			     o < (uintptr_t)ev + len; o += LINE)
+				plat_dcache_inv((const void *)o);
 			if (!txf_report(r, b, (const volatile u32 *)ev, len)) {
 				r->txstats.txfree_full++;
 				break;
