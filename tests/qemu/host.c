@@ -1148,13 +1148,19 @@ static void wlan_session(u32 frames, bool force, u32 nheld, bool stall)
 	CHECK(host_got == chip.sent - chip.stale - bound,
 	      "segments %u of %u - %u - %u", host_got, chip.sent, chip.stale,
 	      bound);
-	CHECK(cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w, sizeof(w),
-		  &ws, NULL) == 0 && ws.rx_frames == chip.sent &&
+	/* the model counts a bound frame before the buffer task pops it */
+	for (t0 = cycles(); cmd(LIBRANPU_SVC_WLAN, LIBRANPU_WLAN_GET_STATS, &w,
+				sizeof(w), &ws, NULL) == 0 &&
+	     ws.ppe_bound != bound && cycles() - t0 < TIMEOUT;)
+		;
+	CHECK(ws.rx_frames == chip.sent &&
 	      ws.rx_stale == chip.stale && ws.rx_ind[6] == chip.gap &&
 	      ws.host_segs == host_got && !ws.rx_pn_fail &&
-	      ws.ppe_bound == bound && !ws.ppe_bad_id,
-	      "stats frames %u stale %u gap %u segs %u bound %u", ws.rx_frames,
-	      ws.rx_stale, ws.rx_ind[6], ws.host_segs, ws.ppe_bound);
+	      ws.ppe_bound == bound && !ws.ppe_bad_id && !ws.rx_dup &&
+	      !ws.ppe_dup && !ws.buf_dup,
+	      "stats frames %u stale %u gap %u segs %u bound %u dup %u %u %u",
+	      ws.rx_frames, ws.rx_stale, ws.rx_ind[6], ws.host_segs,
+	      ws.ppe_bound, ws.rx_dup, ws.ppe_dup, ws.buf_dup);
 
 	/* reports held: one station's frames in the chip pass its limit */
 	if (nheld) {

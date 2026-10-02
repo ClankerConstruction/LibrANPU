@@ -91,6 +91,11 @@ static bool rx_ppe(struct wlan_radio *r, struct rx_pass *p, u32 id, u32 w1)
 	u32 len = FIELD_GET(RXD_LEN, w1);
 	u32 hdr = 2 * FIELD_GET(RXD_HDR_OFS, w1);
 
+	/* the frame engine still has this buffer: leave it there */
+	if (unlikely(rxs.ppe.len[id])) {
+		r->stats.rx_dup++;
+		return true;
+	}
 	if (!ppe_room(&rxs.ppe)) {
 		r->stats.ppe_full++;
 		return false;

@@ -36,6 +36,7 @@ struct buf_state {
 	const u8 *ret;			/* host return ring, cached view */
 	u32 ret_entries;
 	u32 ret_regs;
+	u32 free_map[WLAN_POOL_MAX / 32];
 };
 
 static struct buf_state bs __hart_local;
@@ -48,6 +49,7 @@ static void __attribute__((noinline)) buf_reset(struct wlan_radio *r)
 	spsc_cons_init(&bs.from_rx, r->rx2buf);
 	spsc_cons_init(&bs.from_host, r->host2buf);
 	bs.pool = r->pool;
+	pool_track(&bs.pool, bs.free_map);
 	bs.ret_cons = 0;
 	bs.returned = 0;
 	bs.nbands = r->nbands;
@@ -187,6 +189,8 @@ int wlan_buf_task(struct task *t, int budget)
 	n += take_spsc(&bs.from_rx);
 	n += take_spsc(&bs.from_host);
 	n += ppe_take(r, &bs.pool, budget * 32, st == WLAN_STOPPING);
+	if (unlikely(bs.pool.dup))
+		r->stats.buf_dup = bs.pool.dup;
 
 	if (st == WLAN_RUNNING) {
 		for (b = 0; b < bs.nbands; b++)

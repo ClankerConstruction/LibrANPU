@@ -34,6 +34,7 @@ static struct {
 	u32 bound;			/* the radio's counters */
 	u32 unbound;
 	u32 bad;
+	u32 dup;
 } ps __hart_local;
 
 int ppe_attach(struct wlan_radio *r)
@@ -50,6 +51,9 @@ int ppe_attach(struct wlan_radio *r)
 	if (!p->ring || !p->len || !p->pool)
 		return -ENOSPC;
 
+	/* a non-zero length marks an id at the frame engine */
+	for (i = 0; i < r->pool_ids; i++)
+		p->len[i] = 0;
 	for (i = 0; i < PPE_RING; i++) {
 		REG32(p->ring + 8 * i) = TXD_LS;
 		REG32(p->ring + 8 * i + 4) = 0;
@@ -87,7 +91,7 @@ u32 ppe_take(struct wlan_radio *r, struct id_pool *pool, u32 budget,
 		spsc_prod_init(&ps.host, r->ppe2host);
 		ps.len = r->ppe.len;
 		ps.ids = r->pool_ids;
-		bound = unbound = ps.bad = 0;
+		bound = unbound = ps.bad = ps.dup = 0;
 	}
 
 	while (n < budget) {
@@ -97,7 +101,10 @@ u32 ppe_take(struct wlan_radio *r, struct id_pool *pool, u32 budget,
 			break;
 		if (unlikely(id >= ps.ids)) {
 			s->ppe_bad_id = ++ps.bad;
+		} else if (unlikely(!ps.len[id])) {
+			s->ppe_dup = ++ps.dup;
 		} else if ((v & BUF_ID_BOUND) || stopping) {
+			ps.len[id] = 0;
 			pool_put(pool, id, 0, ps.ids - 1);
 			if (v & BUF_ID_BOUND)
 				bound++;
@@ -113,6 +120,7 @@ u32 ppe_take(struct wlan_radio *r, struct id_pool *pool, u32 budget,
 			m = spsc_slot(&ps.host, k++);
 			m->id = id;
 			m->len = ps.len[id];
+			ps.len[id] = 0;
 			m->info = FIELD_PREP(LIBRANPU_HRX_FOE,
 					     FIELD_GET(PPE_INF_FOE, inf)) |
 				  FIELD_PREP(LIBRANPU_HRX_CRSN,

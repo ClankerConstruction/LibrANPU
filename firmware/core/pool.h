@@ -15,6 +15,8 @@ struct id_pool {
 	u32 size;			/* ids the pool was built with */
 	u32 low;			/* lowest top seen, for the host */
 	u32 bad;			/* returns out of range or on a full stack */
+	u32 *map;			/* optional: a bit per free id */
+	u32 dup;			/* returns of an id already free */
 };
 
 static inline void pool_init(struct id_pool *p, u16 *stack, u32 first,
@@ -29,6 +31,7 @@ static inline void pool_init(struct id_pool *p, u16 *stack, u32 first,
 	p->top = count;
 	p->low = count;
 	p->bad = 0;
+	p->map = NULL;
 }
 
 /*
@@ -51,7 +54,21 @@ static inline u32 pool_init_except(struct id_pool *p, u16 *stack, u32 count,
 	}
 	p->low = p->top;
 	p->bad = 0;
+	p->map = NULL;
 	return count - p->top;
+}
+
+/* map, a bit per id below size: a second return of an id is refused */
+static inline void pool_track(struct id_pool *p, u32 *map)
+{
+	u32 i;
+
+	for (i = 0; i < (p->size + 31) / 32; i++)
+		map[i] = 0;
+	for (i = 0; i < p->top; i++)
+		map[p->stack[i] / 32] |= BIT(p->stack[i] % 32);
+	p->map = map;
+	p->dup = 0;
 }
 
 /* up to n ids into ids[]; returns how many */
@@ -61,8 +78,11 @@ static inline u32 pool_get(struct id_pool *p, u16 *ids, u32 n)
 
 	if (n > p->top)
 		n = p->top;
-	for (i = 0; i < n; i++)
+	for (i = 0; i < n; i++) {
 		ids[i] = p->stack[--p->top];
+		if (p->map)
+			p->map[ids[i] / 32] &= ~BIT(ids[i] % 32);
+	}
 	if (p->top < p->low)
 		p->low = p->top;
 	return n;
@@ -74,6 +94,13 @@ static inline void pool_put(struct id_pool *p, u16 id, u32 first, u32 last)
 	if (unlikely(id < first || id > last || p->top == p->size)) {
 		p->bad++;
 		return;
+	}
+	if (p->map) {
+		if (unlikely(p->map[id / 32] & BIT(id % 32))) {
+			p->dup++;
+			return;
+		}
+		p->map[id / 32] |= BIT(id % 32);
 	}
 	p->stack[p->top++] = id;
 }

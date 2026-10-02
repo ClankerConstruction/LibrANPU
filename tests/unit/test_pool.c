@@ -77,3 +77,25 @@ TEST(init_except_held)
 	CHECK_EQ(pool_init_except(&p, stack, 40, NULL), 0);
 	CHECK_EQ(p.top, 40);
 }
+
+TEST(tracked_refuses_second_return)
+{
+	u32 held[2] = { BIT(5), 0 }, map[2];
+	struct id_pool p;
+	u16 ids[2];
+
+	pool_init_except(&p, stack, 40, held);
+	pool_track(&p, map);
+	CHECK_EQ(map[0], ~BIT(5));
+	CHECK_EQ(map[1], 0xFF);
+	pool_put(&p, 7, 0, 39);		/* free already */
+	CHECK_EQ(p.dup, 1);
+	CHECK_EQ(p.top, 39);
+	CHECK_EQ(pool_get(&p, ids, 2), 2);
+	pool_put(&p, ids[0], 0, 39);
+	pool_put(&p, ids[0], 0, 39);
+	pool_put(&p, 5, 0, 39);		/* held at attach */
+	CHECK_EQ(p.dup, 2);
+	CHECK_EQ(p.top, 39);
+	CHECK_EQ(p.bad, 0);
+}

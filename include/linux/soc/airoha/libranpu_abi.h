@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		9
+#define LIBRANPU_ABI_MINOR		10
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -426,6 +426,10 @@ struct libranpu_wlan_stats {
 	__le32 ppe_bound;		/* forwarded, id back */
 	__le32 ppe_unbound;		/* back to the host with FOE, CRSN */
 	__le32 ppe_bad_id;
+	/* ids reported while another user held them: ignored */
+	__le32 rx_dup;			/* chip: still at the frame engine */
+	__le32 ppe_dup;			/* frame engine: not sent to it */
+	__le32 buf_dup;			/* given back while already free */
 	__le16 ppe_crsn[32];		/* unbound returns per CPU reason, wrap */
 };
 
