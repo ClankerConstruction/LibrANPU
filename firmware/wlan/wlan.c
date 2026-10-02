@@ -199,8 +199,11 @@ static void fill_rings(struct wlan_radio *r)
 			wlan_rx_slot(r, d, id);
 		}
 	}
-	for (i = 0; i < r->rxdmad.entries; i++)
+	for (i = 0; i < r->rxdmad.entries; i++) {
+		REG32(r->rxdmad.desc + 16 * i + 4) = 0;
+		REG32(r->rxdmad.desc + 16 * i + 8) = WLAN_RXD_NO_ID;
 		REG32(r->rxdmad.desc + 16 * i + 12) = WLAN_GEN_STALE;
+	}
 	/* tx: every slot starts as the chip's, done */
 	for (b = 0; b < r->nbands; b++)
 		for (i = 0; i < r->tx[b].entries; i++)
@@ -282,6 +285,7 @@ static int wlan_attach(struct cmd_ctx *c)
 	r->mod_cycles = (a->rx_mod_us ?: MOD_US) * plat_cpu_mhz();
 
 	stack = arena_alloc(&npu_sram, 2 * a->pool_ids, 4, OWNER_RADIO0);
+	r->rx_own = arena_alloc(&npu_sram, a->pool_ids, 4, OWNER_RADIO0);
 	r->rx2host = arena_alloc(&npu_sram, spsc_bytes(WLAN_RX2HOST, 8), 32,
 				 OWNER_RADIO0);
 	r->rx2buf = arena_alloc(&npu_sram, spsc_bytes(WLAN_RETQ, 4), 32,
@@ -290,9 +294,11 @@ static int wlan_attach(struct cmd_ctx *c)
 				  OWNER_RADIO0);
 	r->ppe2host = arena_alloc(&npu_sram, spsc_bytes(WLAN_RX2HOST, 8), 32,
 				  OWNER_RADIO0);
-	err = stack && r->rx2host && r->rx2buf && r->host2buf && r->ppe2host ?
-	      0 : -ENOSPC;
+	err = stack && r->rx_own && r->rx2host && r->rx2buf && r->host2buf &&
+	      r->ppe2host ? 0 : -ENOSPC;
 	if (!err) {
+		for (i = 0; i < a->pool_ids; i++)
+			r->rx_own[i] = 0;
 		r->held = pool_init_except(&r->pool, stack, a->pool_ids, held);
 		/* the pool must outlast the chip's rings */
 		if (need >= r->pool.top)

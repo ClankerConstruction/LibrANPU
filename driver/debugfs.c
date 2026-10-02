@@ -299,7 +299,7 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 		"host_segs", "host_full", "host_dropped", "buf_refill0",
 		"buf_refill1", "buf_returned", "buf_bad_ret", "buf_empty",
 		"ppe_tx", "ppe_full", "ppe_bound", "ppe_unbound", "ppe_bad_id",
-		"rx_dup", "ppe_dup", "buf_dup",
+		"rx_dup", "ppe_dup", "buf_dup", "rx_torn",
 	};
 	static const char * const tx_names[] = {
 		"tx_descs0", "tx_descs1", "tx_full0", "tx_full1", "tx_rewrite",

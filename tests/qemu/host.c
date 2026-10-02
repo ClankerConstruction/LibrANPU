@@ -505,6 +505,7 @@ struct chip {
 	u32 sent;
 	u32 stale;
 	u32 gap;			/* big sequence gap: a good frame */
+	u32 torn;			/* generation written before the rest */
 };
 
 static struct chip chip;
@@ -839,6 +840,16 @@ static int chip_rx(u32 band, u32 len, bool last, u32 tag, u32 ind)
 	for (i = 0; i < len; i++)
 		buf[i] = (u8)(tag + i);
 	d[1] |= BIT(31);
+	/* now and then the generation word lands well before the rest */
+	if (tag % 64 == 9) {
+		u32 t = cycles();
+
+		c[3] = chip.rxd_gen << 28;
+		wmb();
+		while (cycles() - t < 20000)
+			;
+		chip.torn++;
+	}
 	c[1] = len << 16 | (last ? BIT(30) : 0) | 1 << 11 | fe.hdr[id];
 	c[2] = id << 16 | ind << 12;
 	wmb();
@@ -1157,10 +1168,11 @@ static void wlan_session(u32 frames, bool force, u32 nheld, bool stall)
 	      ws.rx_stale == chip.stale && ws.rx_ind[6] == chip.gap &&
 	      ws.host_segs == host_got && !ws.rx_pn_fail &&
 	      ws.ppe_bound == bound && !ws.ppe_bad_id && !ws.rx_dup &&
-	      !ws.ppe_dup && !ws.buf_dup,
-	      "stats frames %u stale %u gap %u segs %u bound %u dup %u %u %u",
-	      ws.rx_frames, ws.rx_stale, ws.rx_ind[6], ws.host_segs,
-	      ws.ppe_bound, ws.rx_dup, ws.ppe_dup, ws.buf_dup);
+	      !ws.ppe_dup && !ws.buf_dup && ws.rx_torn && !ws.rx_bad_id,
+	      "stats frames %u stale %u gap %u segs %u bound %u dup %u %u %u "
+	      "torn %u of %u", ws.rx_frames, ws.rx_stale, ws.rx_ind[6],
+	      ws.host_segs, ws.ppe_bound, ws.rx_dup, ws.ppe_dup, ws.buf_dup,
+	      ws.rx_torn, chip.torn);
 
 	/* reports held: one station's frames in the chip pass its limit */
 	if (nheld) {

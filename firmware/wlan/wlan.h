@@ -31,6 +31,8 @@
 #define WLAN_TX_DESC_DONE	BIT(31)
 /* a completion generation the NPU does not expect first */
 #define WLAN_GEN_STALE		0xF0000000
+/* a completion's id word once read: no id */
+#define WLAN_RXD_NO_ID		0xFFFF0000
 
 enum wlan_state {
 	WLAN_DETACHED,
@@ -113,6 +115,7 @@ struct wlan_radio {
 	u32 headroom;			/* chip writes at buffer + headroom */
 	u32 rx_ctrl;			/* rx descriptor word 1 */
 	u32 held;			/* ids the host held at attach */
+	volatile u8 *rx_own;		/* per id: 1 while under a chip rx slot */
 	bool no_drain;			/* this stop leaves the chip's frames */
 	u32 nbands;
 	struct wlan_ring rx[WLAN_BANDS];
@@ -194,6 +197,7 @@ static inline u32 wlan_pool_bus(const struct wlan_radio *r, u32 id)
 static inline void wlan_rx_slot(const struct wlan_radio *r,
 				volatile u32 *d, u16 id)
 {
+	r->rx_own[id] = 1;
 	d[0] = wlan_pool_bus(r, id) + r->headroom;
 	d[2] = (u32)id << 16;
 	d[3] = 0;

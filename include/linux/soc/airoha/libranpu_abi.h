@@ -427,9 +427,10 @@ struct libranpu_wlan_stats {
 	__le32 ppe_unbound;		/* back to the host with FOE, CRSN */
 	__le32 ppe_bad_id;
 	/* ids reported while another user held them: ignored */
-	__le32 rx_dup;			/* chip: still at the frame engine */
+	__le32 rx_dup;			/* chip: an id it does not hold */
 	__le32 ppe_dup;			/* frame engine: not sent to it */
 	__le32 buf_dup;			/* given back while already free */
+	__le32 rx_torn;			/* chip: completion read before its words */
 	__le16 ppe_crsn[32];		/* unbound returns per CPU reason, wrap */
 };
 
