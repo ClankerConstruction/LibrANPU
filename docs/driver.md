@@ -51,7 +51,8 @@ Rx buffers (`driver/rxbuf.c`): `libranpu_rx_skb` (a frame's buffers as one skb),
 `rx_reclaim` (ids for the return ring). One NAPI context calls them.
 
 debugfs: `status`, `dbg_block`, `probe`, `cmd_bench`, `ha_probe`, `wlan_stats` (NPU counters, then
-`host_lent_frames`, `host_copied_frames`, `host_reclaimed`, `host_lent_now N of MAX`),
+`host_lent_frames`, `host_copied_frames`, `host_reclaimed`, `host_lent_now N of MAX`,
+`host_rx_dup`: frames dropped for an id the host still held),
 `wlan_rx_lend`, `wlan_sta_q` (write a wcid, read its frames and delay in the chip) (bench only).
 
 devlink (`platform/1e900000.npu`): resources `rx_buffers` (occupancy: lent to the stack) and

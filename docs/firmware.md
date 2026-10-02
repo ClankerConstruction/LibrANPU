@@ -115,6 +115,17 @@ flowchart LR
   chip, host, transit, frame engine).
 - Counters (`GET_STATS`): completions per indication reason, stale drops, host ring, refills per
   band, PPE sent/bound/unbound/full, unbound returns per CPU reason.
+- Ids have one owner at a time; a hand-over to a second one is counted and ignored:
+
+  | owner | marker | refused, counted as |
+  | --- | --- | --- |
+  | pool (buffer task) | free bitmap | a return of a free id: `buf_dup` |
+  | chip rx slot | `rx_own[id]`, set at refill | a completion for an unmarked id: `rx_dup` |
+  | frame engine | PPE `len[id]` non-zero | a FIFO entry for an id not sent: `ppe_dup` |
+  | host (driver) | its own bitmap | a frame naming an id it holds: `host_rx_dup` |
+
+  The rx task clears a completion's id and length once read; a new generation still showing them
+  is read again for up to 1 ms (`rx_torn`). All stay 0 on the DUT.
 
 ### Host tx
 
