@@ -337,6 +337,7 @@ static int wlan_stats_show(struct seq_file *s, void *data)
 		   b->lent_frames, b->copied_frames);
 	seq_printf(s, "host_reclaimed %llu\nhost_lent_now %u of %u\n",
 		   b->reclaimed, b->lent, b->lend_max);
+	seq_printf(s, "host_rx_dup %llu\n", b->dup);
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(wlan_stats);

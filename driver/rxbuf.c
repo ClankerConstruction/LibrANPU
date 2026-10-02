@@ -27,6 +27,34 @@ static void rxb_ready(struct libranpu_rxb *b, u32 id)
 	b->ready[(b->ready_head + b->ready_len++) % b->ids] = id;
 }
 
+/*
+ * The NPU hands each id out once until it is returned; a second one
+ * means two frames in one buffer. Its other ids go back unused.
+ */
+static bool rxb_claim(struct libranpu *npu, const struct libranpu_rx_seg *seg,
+		      u32 nseg)
+{
+	struct libranpu_rxb *b = &npu->rxb;
+	u32 i, dup = 0;
+
+	for (i = 0; i < nseg; i++) {
+		if (seg[i].id >= b->ids)
+			continue;
+		if (__test_and_set_bit(seg[i].id, b->out)) {
+			dup |= BIT(i);
+			dev_err_ratelimited(npu->dev, "rx id %u twice\n",
+					    seg[i].id);
+		}
+	}
+	if (likely(!dup))
+		return true;
+	b->dup++;
+	for (i = 0; i < nseg; i++)
+		if (seg[i].id < b->ids && !(dup & BIT(i)))
+			rxb_ready(b, seg[i].id);
+	return false;
+}
+
 /* the page's lent buffers, if the stack let go of all of them */
 static bool rxb_take(struct libranpu *npu, u32 p, u32 *ids, u32 *n)
 {
@@ -58,7 +86,7 @@ static bool rxb_take(struct libranpu *npu, u32 p, u32 *ids, u32 *n)
 u32 libranpu_rx_reclaim(struct libranpu *npu, u32 *ids, u32 max)
 {
 	struct libranpu_rxb *b = &npu->rxb;
-	u32 n = 0, scan;
+	u32 n = 0, scan, i;
 
 	for (; n < max && b->ready_len; b->ready_len--) {
 		ids[n++] = b->ready[b->ready_head];
@@ -75,18 +103,27 @@ u32 libranpu_rx_reclaim(struct libranpu *npu, u32 *ids, u32 max)
 		else
 			b->fifo_len--;
 	}
+	for (i = 0; i < n; i++)
+		__clear_bit(ids[i], b->out);
 	return n;
 }
 EXPORT_SYMBOL_GPL(libranpu_rx_reclaim);
 
-void libranpu_rx_drop(struct libranpu *npu,
-		      const struct libranpu_rx_seg *seg, u32 nseg)
+static void rxb_drop(struct libranpu *npu, const struct libranpu_rx_seg *seg,
+		     u32 nseg)
 {
 	u32 i;
 
 	for (i = 0; i < nseg; i++)
 		if (seg[i].id < npu->rxb.ids)
 			rxb_ready(&npu->rxb, seg[i].id);
+}
+
+void libranpu_rx_drop(struct libranpu *npu,
+		      const struct libranpu_rx_seg *seg, u32 nseg)
+{
+	if (rxb_claim(npu, seg, nseg))
+		rxb_drop(npu, seg, nseg);
 }
 EXPORT_SYMBOL_GPL(libranpu_rx_drop);
 
@@ -144,7 +181,7 @@ static struct sk_buff *rxb_copy(struct libranpu *npu,
 		skb_put_data(skb, npu->pool.cpu +
 			     seg[i].id * LIBRANPU_RX_BUF_SIZE + seg[i].off,
 			     seg[i].len);
-	libranpu_rx_drop(npu, seg, nseg);
+	rxb_drop(npu, seg, nseg);
 	return skb;
 }
 
@@ -156,6 +193,8 @@ struct sk_buff *libranpu_rx_skb(struct libranpu *npu,
 	struct sk_buff *skb = NULL;
 	u32 i, len = 0;
 
+	if (!rxb_claim(npu, seg, nseg))
+		return NULL;
 	for (i = 0; i < nseg; i++) {
 		if (seg[i].id >= b->ids || !seg[i].len ||
 		    seg[i].off + seg[i].len > b->buf_len)
@@ -178,7 +217,7 @@ struct sk_buff *libranpu_rx_skb(struct libranpu *npu,
 	return rxb_copy(npu, napi, seg, nseg, len);
 
 drop:
-	libranpu_rx_drop(npu, seg, nseg);
+	rxb_drop(npu, seg, nseg);
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(libranpu_rx_skb);
@@ -198,6 +237,8 @@ dma_addr_t libranpu_rxb_attach(struct libranpu *npu, u32 rx_ring_ids)
 		b->lend_max = 0;
 
 	memset(b->held, 0, BITS_TO_U32(b->ids) * sizeof(u32));
+	/* the NPU takes back all but the held ids */
+	bitmap_zero(b->out, b->ids);
 	for (i = 0; i < n; i++) {
 		u32 p = b->fifo[b->fifo_head], slot;
 		unsigned long lent = b->pg[p].lent;
@@ -212,6 +253,7 @@ dma_addr_t libranpu_rxb_attach(struct libranpu *npu, u32 rx_ring_ids)
 			u32 id = p * b->per_page + slot;
 
 			b->held[id / 32] |= cpu_to_le32(BIT(id % 32));
+			__set_bit(id, b->out);
 			held++;
 		}
 	}
@@ -237,7 +279,8 @@ int libranpu_rxb_init(struct libranpu *npu)
 	b->held = dmam_alloc_coherent(npu->dev,
 				      BITS_TO_U32(b->ids) * sizeof(u32),
 				      &b->held_dma, GFP_KERNEL);
-	if (!b->ready || !b->held)
+	b->out = bitmap_zalloc(b->ids, GFP_KERNEL);
+	if (!b->ready || !b->held || !b->out)
 		return -ENOMEM;
 	/* the NPU reads it at attach; out of its reach, nothing is lent */
 	if (b->held_dma < NPU_DRAM_WIN_START ||
@@ -287,5 +330,6 @@ void libranpu_rxb_deinit(struct libranpu *npu)
 	kvfree(b->pg);
 	kvfree(b->fifo);
 	kvfree(b->ready);
+	bitmap_free(b->out);
 	memset(b, 0, sizeof(*b));
 }

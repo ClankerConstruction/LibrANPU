@@ -70,7 +70,8 @@ struct libranpu_rxb {
 	bool lend;			/* bench switch, debugfs */
 	__le32 *held;			/* attach: ids still lent */
 	dma_addr_t held_dma;
-	u64 lent_frames, copied_frames, reclaimed;
+	unsigned long *out;		/* ids from the NPU not yet returned */
+	u64 lent_frames, copied_frames, reclaimed, dup;
 };
 
 struct libranpu {
