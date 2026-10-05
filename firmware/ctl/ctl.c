@@ -64,7 +64,10 @@ static int ctl_reset(struct cmd_ctx *c)
 	return CMD_ASYNC;
 }
 
-/* others parked, or out of time: answer, then hart 0 parks too */
+/*
+ * Others parked, or out of time: answer, then hart 0 parks too. The
+ * answer is always 0: the mask tells the host which harts did not park.
+ */
 static void ctl_reset_poll(void)
 {
 	u32 others = (BIT(SOC_HARTS) - 1) & ~BIT(0);
@@ -78,8 +81,7 @@ static void ctl_reset_poll(void)
 	reset.pending = false;
 	rsp.parked = parked | BIT(0);
 	dbg_trace(LIBRANPU_TRACE_PARK, rsp.parked, 0);
-	cmd_finish(&reset.ref, (parked & others) == others ? 0 : -ETIMEDOUT,
-		   &rsp, sizeof(rsp));
+	cmd_finish(&reset.ref, 0, &rsp, sizeof(rsp));
 	evt_flush(true);
 	runner_park(BIT(0));
 }

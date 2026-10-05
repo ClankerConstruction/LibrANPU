@@ -210,6 +210,7 @@ enum libranpu_task_id {
 	LIBRANPU_TASK_MAX,
 };
 
+/* status 0 even when a hart did not park in time */
 struct libranpu_reset_rsp {
 	__le32 parked;			/* mask of harts parked */
 };
