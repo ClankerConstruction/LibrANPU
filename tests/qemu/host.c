@@ -159,6 +159,8 @@ struct done {
 
 static struct done dones[64];
 static u32 ndone, events[LIBRANPU_EVT_MAX], bad_events;
+static struct libranpu_evt_fatal last_fatal;
+static struct libranpu_evt_stall last_stall;
 
 static void drain(void)
 {
@@ -182,6 +184,12 @@ static void drain(void)
 			} else {
 				events[type]++;
 			}
+			if (type == LIBRANPU_EVT_FATAL)
+				memcpy(&last_fatal, (const void *)e->payload,
+				       sizeof(last_fatal));
+			if (type == LIBRANPU_EVT_TASK_STALL)
+				memcpy(&last_stall, (const void *)e->payload,
+				       sizeof(last_stall));
 			if (type == LIBRANPU_EVT_CMD_DONE &&
 			    ndone < ARRAY_SIZE(dones)) {
 				const volatile struct libranpu_evt_cmd_done *d =
@@ -431,25 +439,83 @@ static void test_dbg(void)
 	      "hart 7");
 }
 
+#define FAULT_HART	5		/* runs only the debug task */
+#define MCAUSE_ILLEGAL	2
+
+/* events wait for the health period: poll for a while */
+static bool wait_event(u32 type, u32 count)
+{
+	u32 i;
+
+	for (i = 0; i < 20000000; i++) {
+		drain();
+		if (events[type] > count)
+			return true;
+	}
+	return false;
+}
+
+static void test_fault(void)
+{
+	const volatile struct libranpu_dbg_block *d = (const void *)(NPU_CLUSTER_BASE +
+							       0x6800);
+	struct libranpu_dbg_probe_rsp r;
+	u32 n, beat;
+	s32 st;
+
+	/* a hang past the stall limit, then the hart runs again */
+	n = events[LIBRANPU_EVT_TASK_STALL];
+	st = probe(3, LIBRANPU_PROBE_HANG, 300000, 0, 0, &r);
+	CHECK(st == -ETIMEDOUT, "hang answer %d", (int)st);
+	CHECK(wait_event(LIBRANPU_EVT_TASK_STALL, n) && last_stall.hart == 3,
+	      "stall event %u hart %u", events[LIBRANPU_EVT_TASK_STALL] - n,
+	      last_stall.hart);
+	beat = d->hart[3].heartbeat;
+	for (n = 0; n < 20000000 && d->hart[3].heartbeat == beat; n++)
+		;
+	CHECK(d->hart[3].heartbeat != beat, "hart 3 heartbeat after hang");
+
+	/* a trap: FATAL names the hart, its task and the cause */
+	n = events[LIBRANPU_EVT_FATAL];
+	st = probe(FAULT_HART, LIBRANPU_PROBE_TRAP, 0, 0, 0, &r);
+	CHECK(st == -ETIMEDOUT, "trap answer %d", (int)st);
+	CHECK(wait_event(LIBRANPU_EVT_FATAL, n), "no FATAL");
+	CHECK(last_fatal.hart == FAULT_HART &&
+	      last_fatal.task == LIBRANPU_TASK_DBG &&
+	      last_fatal.mcause == MCAUSE_ILLEGAL,
+	      "fatal hart %u task %u mcause %x", last_fatal.hart,
+	      last_fatal.task, last_fatal.mcause);
+	CHECK(d->hart[FAULT_HART].state == LIBRANPU_HART_FAULT,
+	      "hart state %u", d->hart[FAULT_HART].state);
+	CHECK(bb->fault[FAULT_HART] & LIBRANPU_FAULT_VALID, "fault word %x",
+	      bb->fault[FAULT_HART]);
+	CHECK(probe(FAULT_HART, LIBRANPU_PROBE_CYCLES, 0, 0, 0, &r) == -EIO,
+	      "probe on a faulted hart");
+}
+
+/* the faulted hart cannot park: RESET still answers, without it */
 static void test_reset(void)
 {
 	struct libranpu_reset_rsp r;
 	const volatile struct libranpu_dbg_block *d = (const void *)(NPU_CLUSTER_BASE +
 							       0x6800);
-	u32 h;
+	u32 h, live = (BIT(HARTS) - 1) & ~BIT(FAULT_HART);
 	s32 st;
 
 	st = cmd(LIBRANPU_SVC_CTL, LIBRANPU_CTL_RESET, NULL, 0, &r, NULL);
-	CHECK(st == 0 && r.parked == BIT(HARTS) - 1, "reset %d %x", (int)st,
+	CHECK(st == 0 && r.parked == live, "reset %d %x", (int)st,
 	      r.parked);
 	for (h = 0; h < 10000000; h++)
 		if (d->hart[0].state == LIBRANPU_HART_PARKED)
 			break;
 	for (h = 0; h < HARTS; h++)
-		CHECK(d->hart[h].state == LIBRANPU_HART_PARKED, "hart %u %u",
-		      h, d->hart[h].state);
+		CHECK(d->hart[h].state == (h == FAULT_HART ?
+					   LIBRANPU_HART_FAULT :
+					   LIBRANPU_HART_PARKED),
+		      "hart %u %u", h, d->hart[h].state);
 	for (h = 0; h < HARTS; h++)
-		CHECK(!bb->fault[h], "fault %u %x", h, bb->fault[h]);
+		CHECK(!bb->fault[h] == (h != FAULT_HART), "fault %u %x", h,
+		      bb->fault[h]);
 }
 
 /* ---- WLAN: a chip model and the host driver's side ------------- */
@@ -1318,6 +1384,7 @@ void host_main(void)
 	test_burst();
 	test_dbg();
 	test_wlan();
+	test_fault();
 	test_reset();
 	finish();
 }
