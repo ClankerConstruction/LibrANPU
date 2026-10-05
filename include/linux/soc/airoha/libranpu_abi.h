@@ -16,7 +16,7 @@
 #endif
 
 #define LIBRANPU_ABI_MAJOR		2
-#define LIBRANPU_ABI_MINOR		10
+#define LIBRANPU_ABI_MINOR		11
 
 /* SoC ids, as in the image header and GET_CAPS */
 #define LIBRANPU_SOC_AN7552		0x7552
@@ -252,6 +252,8 @@ enum libranpu_probe_id {
 	LIBRANPU_PROBE_WFI,		/* wfi with a timer wake */
 	LIBRANPU_PROBE_XHART,		/* cached write, other hart reads */
 	LIBRANPU_PROBE_CLUSTER,	/* cluster SRAM size */
+	LIBRANPU_PROBE_TRAP,		/* the hart takes an illegal instruction */
+	LIBRANPU_PROBE_HANG,		/* the hart spins: us, 0 for ever */
 	LIBRANPU_PROBE_MAX,
 };
 

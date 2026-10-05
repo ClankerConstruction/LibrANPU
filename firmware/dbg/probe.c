@@ -179,6 +179,21 @@ static void probe_cluster(struct probe_req *r)
 	r->res[0] = s;
 }
 
+/* fault injection: no trap_catch, so health and the host see it */
+static void probe_trap(void)
+{
+	__asm__ volatile("unimp");
+}
+
+/* the runner loop stops, so does the hart's heartbeat */
+static void probe_hang(struct probe_req *r)
+{
+	u32 t0 = cycles(), limit = r->arg[0] * plat_cpu_mhz();
+
+	while (!r->arg[0] || cycles() - t0 < limit)
+		barrier();
+}
+
 static void probe_run(struct probe_req *r, u32 hart)
 {
 	switch (r->probe) {
@@ -196,6 +211,12 @@ static void probe_run(struct probe_req *r, u32 hart)
 		break;
 	case LIBRANPU_PROBE_CLUSTER:
 		probe_cluster(r);
+		break;
+	case LIBRANPU_PROBE_TRAP:
+		probe_trap();
+		break;
+	case LIBRANPU_PROBE_HANG:
+		probe_hang(r);
 		break;
 	default:
 		r->status = -EOPNOTSUPP;
