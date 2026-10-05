@@ -122,10 +122,14 @@ int libranpu_cmd(struct libranpu *npu, u8 service, u16 opcode,
 		s->abandoned = !late;
 		spin_unlock_bh(&npu->slot_lock);
 		if (!late) {
+			u32 pc = npu_rr(npu, REG_HART_PC(0));
+
 			dev_err(npu->dev, "command %u/%u timed out, hart0 pc %08x\n",
-				service, opcode, npu_rr(npu, REG_HART_PC(0)));
+				service, opcode, pc);
 			WRITE_ONCE(npu->unhealthy, true);
 			wake_up(&npu->slot_wq);
+			libranpu_health_fault(npu, LIBRANPU_FAULT_CMD_TIMEOUT, 0, 0,
+					      service << 16 | opcode, pc);
 			return -ETIMEDOUT;
 		}
 	}
@@ -179,18 +183,40 @@ static void evt_cmd_done(struct libranpu *npu,
 		cmd_release(npu, idx);
 }
 
+/*
+ * A trap reaches us twice, as a FATAL event and as the boot block fault
+ * word (the only way for hart 0): act on whichever comes first.
+ */
+static void hart_fault(struct libranpu *npu, u32 hart)
+{
+	struct libranpu_dbg_hart r;
+
+	if (hart >= npu->soc->harts || npu->faults_seen & BIT(hart))
+		return;
+	npu->faults_seen |= BIT(hart);
+
+	memcpy_fromio(&r, npu->base + le32_to_cpu(npu->hdr.dbg_offset) +
+		      offsetof(struct libranpu_dbg_block, hart[hart]), sizeof(r));
+	dev_err(npu->dev,
+		"hart %u task %u fault: mcause %x mepc %08x mtval %08x ra %08x sp %08x\n",
+		hart, le32_to_cpu(r.task), le32_to_cpu(r.mcause),
+		le32_to_cpu(r.mepc), le32_to_cpu(r.mtval), le32_to_cpu(r.ra),
+		le32_to_cpu(r.sp));
+	WRITE_ONCE(npu->unhealthy, true);
+	wake_up(&npu->slot_wq);
+	libranpu_health_fault(npu, LIBRANPU_FAULT_TRAP, hart,
+			      le32_to_cpu(r.task), le32_to_cpu(r.mcause),
+			      le32_to_cpu(r.mepc));
+	blocking_notifier_call_chain(&npu->notifier, LIBRANPU_FATAL,
+				     (void *)(uintptr_t)hart);
+}
+
 static void evt_fatal(struct libranpu *npu, const struct libranpu_evt *e)
 {
 	const struct libranpu_evt_fatal *f = (const void *)e->payload;
 
-	if (le16_to_cpu(e->len) < sizeof(*f))
-		return;
-	dev_err(npu->dev,
-		"hart %u task %u fault: mcause %x mepc %08x mtval %08x ra %08x sp %08x\n",
-		f->hart, f->task, le32_to_cpu(f->mcause), le32_to_cpu(f->mepc),
-		le32_to_cpu(f->mtval), le32_to_cpu(f->ra), le32_to_cpu(f->sp));
-	blocking_notifier_call_chain(&npu->notifier, LIBRANPU_FATAL,
-				     (void *)(uintptr_t)f->hart);
+	if (le16_to_cpu(e->len) >= sizeof(*f))
+		hart_fault(npu, f->hart);
 }
 
 static void evt_stall(struct libranpu *npu, const struct libranpu_evt *e)
@@ -201,6 +227,8 @@ static void evt_stall(struct libranpu *npu, const struct libranpu_evt *e)
 		return;
 	dev_warn(npu->dev, "hart %u stalled at pc %08x after %u passes\n",
 		 st->hart, le32_to_cpu(st->pc), le32_to_cpu(st->passes));
+	libranpu_health_fault(npu, LIBRANPU_FAULT_STALL, st->hart, 0, 0,
+			      le32_to_cpu(st->pc));
 }
 
 static void evt_one(struct libranpu *npu, const struct libranpu_evt *e)
@@ -228,24 +256,14 @@ static void evt_one(struct libranpu *npu, const struct libranpu_evt *e)
 	}
 }
 
-/* hart 0 cannot use the ring for its own fault */
 static void check_faults(struct libranpu *npu)
 {
-	int h;
+	u32 h;
 
-	for (h = 0; h < npu->soc->harts; h++) {
-		u32 f = le32_to_cpu(READ_ONCE(npu->boot->fault[h]));
-
-		if (!(f & LIBRANPU_FAULT_VALID) || npu->faults_seen & BIT(h))
-			continue;
-		npu->faults_seen |= BIT(h);
-		dev_err(npu->dev, "hart %d trapped, mcause %lx, pc %08x\n", h,
-			f & ~LIBRANPU_FAULT_VALID, npu_rr(npu, REG_HART_PC(h)));
-		WRITE_ONCE(npu->unhealthy, true);
-		wake_up(&npu->slot_wq);
-		blocking_notifier_call_chain(&npu->notifier, LIBRANPU_FATAL,
-					     (void *)(uintptr_t)h);
-	}
+	for (h = 0; h < npu->soc->harts; h++)
+		if (le32_to_cpu(READ_ONCE(npu->boot->fault[h])) &
+		    LIBRANPU_FAULT_VALID)
+			hart_fault(npu, h);
 }
 
 irqreturn_t libranpu_mbox_irq(int irq, void *data)

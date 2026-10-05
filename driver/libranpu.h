@@ -9,6 +9,7 @@
 #include <linux/notifier.h>
 #include <linux/soc/airoha/libranpu.h>
 #include <linux/wait.h>
+#include <linux/workqueue.h>
 
 /* host view of the NPU window */
 #define REG_HART_PC(n)			(0x305000 + (n) * 0x100)
@@ -74,6 +75,21 @@ struct libranpu_rxb {
 	u64 lent_frames, copied_frames, reclaimed, dup;
 };
 
+enum libranpu_fault_kind {
+	LIBRANPU_FAULT_TRAP,
+	LIBRANPU_FAULT_STALL,
+	LIBRANPU_FAULT_CMD_TIMEOUT,
+};
+
+/* what the health reporter dumps first */
+struct libranpu_fault {
+	enum libranpu_fault_kind kind;
+	u8 hart;
+	u8 task;
+	u32 cause;			/* mcause, or service << 16 | opcode */
+	u32 pc;
+};
+
 struct libranpu {
 	struct device *dev;
 	void __iomem *base;
@@ -117,6 +133,11 @@ struct libranpu {
 	struct blocking_notifier_head notifier;
 	struct devlink *devlink;
 	bool dl_params;
+	/* the last fault, reported from health_work */
+	spinlock_t health_lock;
+	struct devlink_health_reporter *fw_reporter;
+	struct work_struct health_work;
+	struct libranpu_fault fault;
 	struct dentry *debugfs;
 	u16 dbg_wcid;			/* debugfs wlan_sta_q */
 	ktime_t boot_time;
@@ -153,6 +174,12 @@ struct libranpu *libranpu_devlink_alloc(struct device *dev);
 void libranpu_devlink_free(struct libranpu *npu);
 void libranpu_devlink_register(struct libranpu *npu);
 void libranpu_devlink_unregister(struct libranpu *npu);
+
+/* health.c */
+void libranpu_health_init(struct libranpu *npu);
+void libranpu_health_fini(struct libranpu *npu);
+void libranpu_health_fault(struct libranpu *npu, enum libranpu_fault_kind kind,
+			   u8 hart, u8 task, u32 cause, u32 pc);
 
 /* debugfs.c */
 void libranpu_debugfs_init(struct libranpu *npu);

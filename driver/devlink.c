@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * devlink: firmware and ABI versions of the running image, rx buffer
- * and tx token occupancy as resources, and the WLAN knobs as params.
+ * and tx token occupancy as resources, the WLAN knobs as params; the
+ * health reporter is in health.c.
  */
 
 #include <net/devlink.h>
@@ -215,10 +216,12 @@ void libranpu_devlink_register(struct libranpu *npu)
 					       ARRAY_SIZE(libranpu_params));
 	devl_register(npu->devlink);
 	devl_unlock(npu->devlink);
+	libranpu_health_init(npu);
 }
 
 void libranpu_devlink_unregister(struct libranpu *npu)
 {
+	libranpu_health_fini(npu);
 	devl_lock(npu->devlink);
 	devl_unregister(npu->devlink);
 	if (npu->dl_params)
