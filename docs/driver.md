@@ -83,6 +83,32 @@ fault word and trap record, the task counters and the trace ring, oldest first. 
 test` traps the last hart (images with the debug service). A stall leaves the NPU healthy; a trap
 or a command timeout marks it unhealthy and later commands fail.
 
+## Recovery and reload
+
+```mermaid
+sequenceDiagram
+  participant H as health work / devlink reload
+  participant D as libranpu
+  participant C as consumer (mt76)
+  participant N as NPU harts
+  H->>D: recover or reload_up (devlink instance lock held)
+  D->>C: PRE_RESET
+  C->>C: stop queues, chip WFDMA off, detach (flushes the PPE WiFi flows)
+  C->>C: NPU line IRQs off
+  D->>N: RESET when healthy, then halt
+  D->>D: IRQ off, waiting commands end -ESHUTDOWN, rings and boot block cleared
+  D->>N: load, boot (host memory polled only)
+  D->>N: IRQ on, GET_CAPS
+  D->>C: POST_RESET (data: ERR_PTR of the reload)
+  C->>C: NPU line IRQs on, full chip restart attaches again
+```
+
+`devlink health recover` and the automatic recovery reload the image, unless the fault was a stall
+and the hart's heartbeat moves again. Automatic recovery waits 20 minutes after the previous one
+(`devlink health set ... grace_period`). `devlink dev reload platform/1e900000.npu` (action
+`driver_reinit`) does the same on demand. No register of the NPU window may be touched between the
+boot trigger and ready: the firmware resets the NPU bus there.
+
 ## Zero-copy rx
 
 ```mermaid
