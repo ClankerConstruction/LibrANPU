@@ -234,6 +234,10 @@ static void libranpu_halt(struct libranpu *npu)
 			   NULL, 0, &rsp, &len);
 	if (err)
 		dev_warn(npu->dev, "RESET: %d\n", err);
+	else if (le32_to_cpu(rsp.parked) != GENMASK(npu->soc->harts - 1, 0))
+		dev_warn(npu->dev, "RESET: harts %lx did not park\n",
+			 GENMASK(npu->soc->harts - 1, 0) &
+			 ~le32_to_cpu(rsp.parked));
 	libranpu_harts(npu, 0);
 }
 
