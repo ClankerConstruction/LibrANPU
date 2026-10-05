@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "fw/csr.h"
+#include "core/task.h"
 #include "core/trap.h"
 #include "ctl/boot.h"
 #include "dbg/dbg.h"
@@ -59,6 +60,7 @@ u32 trap_handler(u32 mcause, u32 mepc, u32 mtval, u32 ra, u32 sp)
 	rec->mtval = mtval;
 	rec->ra = ra;
 	rec->sp = sp;
+	rec->task = runner_task(hart);
 	wmb();
 	rec->state = LIBRANPU_HART_FAULT;
 	boot_fault(hart, mcause);

@@ -14,6 +14,13 @@ struct hart_rt {
 static struct hart_rt harts[SOC_HARTS];
 static u32 ntasks;
 
+/* one cache line per hart: a store per task call stays local */
+struct hart_cur {
+	u32 task;
+} __aligned(64);
+
+static struct hart_cur cur[SOC_HARTS] __hart_local;
+
 int task_add(u32 hart, u8 id, task_fn run, void *ctx, u16 budget)
 {
 	struct hart_rt *h = &harts[hart];
@@ -44,6 +51,11 @@ u32 task_map(u32 hart)
 	for (i = 0; i < harts[hart].n; i++)
 		map |= BIT(harts[hart].task[i].id);
 	return map;
+}
+
+u32 runner_task(u32 hart)
+{
+	return cur[hart].task;
 }
 
 u32 task_count(void)
@@ -101,7 +113,10 @@ void __noreturn runner(u32 hart)
 			struct libranpu_dbg_task *r = t->rec;
 			struct task_acct *a = &acct[i];
 			u32 t0 = cycles(), dt;
-			int w = t->run(t, t->budget);
+			int w;
+
+			cur[hart].task = t->id;
+			w = t->run(t, t->budget);
 
 			dt = cycles() - t0;
 			r->passes = ++a->passes;

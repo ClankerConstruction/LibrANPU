@@ -32,6 +32,9 @@ const struct task *task_get(u32 idx);
 
 void __noreturn runner(u32 hart);
 
+/* the task a hart runs now, for its trap record */
+u32 runner_task(u32 hart);
+
 /* park requests are taken at the top of the runner loop */
 void runner_park(u32 mask);
 u32 runner_parked(void);
