@@ -115,6 +115,8 @@ struct libranpu {
 	u32 evt_cons;
 	u32 faults_seen;
 	bool unhealthy;
+	struct mutex reload_lock;
+	u32 reloads;
 
 	int irq;
 	struct libranpu_rx_pool pool;
@@ -140,7 +142,8 @@ struct libranpu {
 	struct libranpu_fault fault;
 	struct dentry *debugfs;
 	u16 dbg_wcid;			/* debugfs wlan_sta_q */
-	ktime_t boot_time;
+	ktime_t boot_time;		/* trigger to ready */
+	ktime_t up_since;
 };
 
 static inline u32 npu_rr(struct libranpu *npu, u32 reg)
@@ -153,8 +156,12 @@ static inline void npu_wr(struct libranpu *npu, u32 reg, u32 val)
 	writel(val, npu->base + reg);
 }
 
+/* core.c */
+int libranpu_reload(struct libranpu *npu);
+
 /* cmd.c */
 void libranpu_cmd_init(struct libranpu *npu);
+void libranpu_cmd_reset(struct libranpu *npu);
 irqreturn_t libranpu_mbox_irq(int irq, void *data);
 irqreturn_t libranpu_mbox_thread(int irq, void *data);
 

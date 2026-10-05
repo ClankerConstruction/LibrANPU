@@ -26,6 +26,37 @@ void libranpu_cmd_init(struct libranpu *npu)
 		init_completion(&npu->slot[i].done);
 }
 
+/*
+ * The harts are halted and the event thread is off: waiting callers get
+ * -ESHUTDOWN, abandoned slots are freed, the rings start over.
+ */
+void libranpu_cmd_reset(struct libranpu *npu)
+{
+	int i;
+
+	mutex_lock(&npu->cmd_lock);
+	spin_lock_bh(&npu->slot_lock);
+	for (i = 0; i < LIBRANPU_CMD_ENTRIES; i++) {
+		struct libranpu_slot *s = &npu->slot[i];
+
+		if (!s->busy)
+			continue;
+		if (s->abandoned) {
+			s->busy = false;
+			s->abandoned = false;
+		} else {
+			s->status = -ESHUTDOWN;
+			complete(&s->done);
+		}
+	}
+	spin_unlock_bh(&npu->slot_lock);
+	npu->cmd_prod = 0;
+	npu->evt_cons = 0;
+	npu->faults_seen = 0;
+	mutex_unlock(&npu->cmd_lock);
+	wake_up(&npu->slot_wq);
+}
+
 static bool slot_free(struct libranpu *npu, u32 idx)
 {
 	bool busy;

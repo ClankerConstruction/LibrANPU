@@ -18,6 +18,8 @@
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 
+#include <net/devlink.h>
+
 #include "libranpu.h"
 
 #define SHM_BOOT		0
@@ -137,9 +139,25 @@ out:
 	return err;
 }
 
+/* a fresh boot block and empty rings, for each boot */
+static void libranpu_shm_fill(struct libranpu *npu)
+{
+	struct libranpu_boot *b = npu->boot;
+	dma_addr_t dma = npu->shm_dma;
+
+	memset(npu->shm, 0, SHM_SIZE);
+	b->magic = cpu_to_le32(LIBRANPU_BOOT_MAGIC);
+	b->abi_major = cpu_to_le16(LIBRANPU_ABI_MAJOR);
+	b->abi_minor = cpu_to_le16(LIBRANPU_ABI_MINOR);
+	b->flags = cpu_to_le32(uart ? LIBRANPU_BOOT_F_UART : 0);
+	b->cmd_ring = cpu_to_le64(dma + SHM_CMD);
+	b->evt_ring = cpu_to_le64(dma + SHM_EVT);
+	b->cmd_entries = cpu_to_le32(LIBRANPU_CMD_ENTRIES);
+	b->evt_entries = cpu_to_le32(LIBRANPU_EVT_ENTRIES);
+}
+
 static int libranpu_shm_init(struct libranpu *npu)
 {
-	struct libranpu_boot *b;
 	dma_addr_t dma;
 
 	npu->shm = dmam_alloc_coherent(npu->dev, SHM_SIZE, &dma, GFP_KERNEL);
@@ -154,16 +172,7 @@ static int libranpu_shm_init(struct libranpu *npu)
 	npu->boot = npu->shm + SHM_BOOT;
 	npu->cmd = npu->shm + SHM_CMD;
 	npu->evt = npu->shm + SHM_EVT;
-
-	b = npu->boot;
-	b->magic = cpu_to_le32(LIBRANPU_BOOT_MAGIC);
-	b->abi_major = cpu_to_le16(LIBRANPU_ABI_MAJOR);
-	b->abi_minor = cpu_to_le16(LIBRANPU_ABI_MINOR);
-	b->flags = cpu_to_le32(uart ? LIBRANPU_BOOT_F_UART : 0);
-	b->cmd_ring = cpu_to_le64(dma + SHM_CMD);
-	b->evt_ring = cpu_to_le64(dma + SHM_EVT);
-	b->cmd_entries = cpu_to_le32(LIBRANPU_CMD_ENTRIES);
-	b->evt_entries = cpu_to_le32(LIBRANPU_EVT_ENTRIES);
+	libranpu_shm_fill(npu);
 	return 0;
 }
 
@@ -193,7 +202,8 @@ static int libranpu_boot(struct libranpu *npu)
 				ready == LIBRANPU_BOOT_READY, 500,
 				NPU_BOOT_TIMEOUT_MS * USEC_PER_MSEC, false,
 				&b->ready);
-	npu->boot_time = ktime_sub(ktime_get(), t0);
+	npu->up_since = ktime_get();
+	npu->boot_time = ktime_sub(npu->up_since, t0);
 	if (err)
 		return dev_err_probe(npu->dev, err, "no ready, hart0 pc %08x\n",
 				     npu_rr(npu, REG_HART_PC(0)));
@@ -230,6 +240,11 @@ static void libranpu_halt(struct libranpu *npu)
 	u16 len = sizeof(rsp);
 	int err;
 
+	/* a faulted image takes no commands: just stop it */
+	if (READ_ONCE(npu->unhealthy)) {
+		libranpu_harts(npu, 0);
+		return;
+	}
 	err = libranpu_cmd(npu, LIBRANPU_SVC_CTL, LIBRANPU_CTL_RESET,
 			   NULL, 0, &rsp, &len);
 	if (err)
@@ -239,6 +254,54 @@ static void libranpu_halt(struct libranpu *npu)
 			 GENMASK(npu->soc->harts - 1, 0) &
 			 ~le32_to_cpu(rsp.parked));
 	libranpu_harts(npu, 0);
+}
+
+/*
+ * Stop the image, load it again and boot it, keeping the host's rings,
+ * pool and consumers. Consumers let go of the NPU at PRE_RESET and
+ * attach again at POST_RESET.
+ */
+int libranpu_reload(struct libranpu *npu)
+{
+	int err;
+
+	/* recover and reload: dumps take the same lock */
+	devl_assert_locked(npu->devlink);
+	mutex_lock(&npu->reload_lock);
+	blocking_notifier_call_chain(&npu->notifier, LIBRANPU_PRE_RESET, NULL);
+	libranpu_halt(npu);
+
+	/* no commands, events or register accesses until the image answers */
+	WRITE_ONCE(npu->unhealthy, true);
+	wake_up(&npu->slot_wq);
+	disable_irq(npu->irq);
+	libranpu_cmd_reset(npu);
+	libranpu_shm_fill(npu);
+
+	err = libranpu_load(npu);
+	if (!err)
+		err = libranpu_boot(npu);
+	if (err)
+		libranpu_harts(npu, 0);
+	else
+		WRITE_ONCE(npu->unhealthy, false);
+	enable_irq(npu->irq);
+
+	if (!err)
+		err = libranpu_get_caps(npu);
+	if (err) {
+		WRITE_ONCE(npu->unhealthy, true);
+		dev_err(npu->dev, "reload failed: %d\n", err);
+	} else {
+		npu->reloads++;
+		dev_info(npu->dev, "reloaded, ready in %lld us\n",
+			 ktime_to_us(npu->boot_time));
+	}
+	/* consumers restart either way, without the NPU after an error */
+	blocking_notifier_call_chain(&npu->notifier, LIBRANPU_POST_RESET,
+				     ERR_PTR(err));
+	mutex_unlock(&npu->reload_lock);
+	return err;
 }
 
 static int libranpu_probe(struct platform_device *pdev)
@@ -255,6 +318,7 @@ static int libranpu_probe(struct platform_device *pdev)
 	npu->dev = dev;
 	npu->soc = of_device_get_match_data(dev);
 	libranpu_cmd_init(npu);
+	mutex_init(&npu->reload_lock);
 
 	npu->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(npu->base)) {

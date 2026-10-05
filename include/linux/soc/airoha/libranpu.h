@@ -102,6 +102,9 @@ void libranpu_ha_irq_ack(struct libranpu *npu, u32 rx_ring);
 
 enum libranpu_event {
 	LIBRANPU_FATAL,			/* data: the hart number */
+	/* a reload: stop using the NPU, its rings and the chip's DMA to it */
+	LIBRANPU_PRE_RESET,
+	LIBRANPU_POST_RESET,		/* data: ERR_PTR of the reload */
 };
 
 int libranpu_register_notifier(struct libranpu *npu,
