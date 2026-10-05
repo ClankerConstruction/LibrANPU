@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * devlink: firmware and ABI versions of the running image, rx buffer
- * and tx token occupancy as resources, the WLAN knobs as params; the
- * health reporter is in health.c.
+ * and tx token occupancy as resources, the WLAN knobs as params, reload
+ * of the image; the health reporter is in health.c.
  */
 
 #include <net/devlink.h>
@@ -183,7 +183,33 @@ static const struct devlink_param libranpu_params[] = {
 	LIBRANPU_PARAM(AQM_SMALL_BYTES, "aqm_small_bytes", U32, NULL),
 };
 
+static int libranpu_reload_down(struct devlink *dl, bool netns_change,
+				enum devlink_reload_action action,
+				enum devlink_reload_limit limit,
+				struct netlink_ext_ack *extack)
+{
+	if (netns_change) {
+		NL_SET_ERR_MSG_MOD(extack, "no network namespace to change");
+		return -EOPNOTSUPP;
+	}
+	return 0;
+}
+
+/* the whole reload runs here: consumers stay until PRE_RESET */
+static int libranpu_reload_up(struct devlink *dl,
+			      enum devlink_reload_action action,
+			      enum devlink_reload_limit limit,
+			      u32 *actions_performed,
+			      struct netlink_ext_ack *extack)
+{
+	*actions_performed = BIT(DEVLINK_RELOAD_ACTION_DRIVER_REINIT);
+	return libranpu_reload(devlink_priv(dl));
+}
+
 static const struct devlink_ops libranpu_devlink_ops = {
+	.reload_actions = BIT(DEVLINK_RELOAD_ACTION_DRIVER_REINIT),
+	.reload_down = libranpu_reload_down,
+	.reload_up = libranpu_reload_up,
 	.info_get = libranpu_info_get,
 };
 

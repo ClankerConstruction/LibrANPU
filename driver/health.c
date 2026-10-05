@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * devlink health reporter "fw": traps, stalled harts and command
- * timeouts, with the debug block in the dump.
+ * timeouts, with the debug block in the dump; recover reloads the image.
  */
 
+#include <linux/delay.h>
 #include <linux/slab.h>
 #include <net/devlink.h>
 
@@ -147,8 +148,33 @@ static int libranpu_fw_diagnose(struct devlink_health_reporter *reporter,
 	devlink_fmsg_u32_pair_put(fmsg, "fw_version",
 				  le32_to_cpu(npu->caps.fw_version));
 	devlink_fmsg_u64_pair_put(fmsg, "up_ms",
-				  ktime_ms_delta(ktime_get(), npu->boot_time));
+				  ktime_ms_delta(ktime_get(), npu->up_since));
+	devlink_fmsg_u32_pair_put(fmsg, "reloads", npu->reloads);
 	return 0;
+}
+
+static u32 hart_beat(struct libranpu *npu, u32 hart)
+{
+	return readl(npu->base + le32_to_cpu(npu->hdr.dbg_offset) +
+		     offsetof(struct libranpu_dbg_block, hart[hart].heartbeat));
+}
+
+/* a stalled hart that runs again needs no reload */
+static int libranpu_fw_recover(struct devlink_health_reporter *reporter,
+			       void *priv_ctx, struct netlink_ext_ack *extack)
+{
+	struct libranpu *npu = devlink_health_reporter_priv(reporter);
+	const struct libranpu_fault *f = priv_ctx;
+
+	if (f && f->kind == LIBRANPU_FAULT_STALL &&
+	    !READ_ONCE(npu->unhealthy)) {
+		u32 beat = hart_beat(npu, f->hart);
+
+		msleep(20);
+		if (hart_beat(npu, f->hart) != beat)
+			return 0;
+	}
+	return libranpu_reload(npu);
 }
 
 /* debug images: a trap on the last hart, as a real one would come */
@@ -176,9 +202,12 @@ static int libranpu_fw_test(struct devlink_health_reporter *reporter,
 
 static const struct devlink_health_reporter_ops libranpu_fw_ops = {
 	.name = "fw",
+	.recover = libranpu_fw_recover,
 	.dump = libranpu_fw_dump,
 	.diagnose = libranpu_fw_diagnose,
 	.test = libranpu_fw_test,
+	/* about three automatic reloads an hour, at most */
+	.default_graceful_period = 20 * 60 * MSEC_PER_SEC,
 };
 
 static void libranpu_health_work(struct work_struct *work)
