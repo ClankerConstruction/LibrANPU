@@ -25,6 +25,9 @@ flowchart LR
   `0x8EC13100`/`0x8EC13104`, so an instrumented QEMU can model the D-cache and catch stale reads.
   `run.sh` passes its arguments to QEMU (e.g. `-plugin file=...`).
 - Band 1's tx free report buffers start 40 bytes into a line: reports cross lines.
+- Faults: a `HANG` probe on hart 3 past the 100 ms limit must raise TASK_STALL and the heartbeat must
+  resume; a `TRAP` probe on hart 5 must raise FATAL with its task and cause. RESET then answers with
+  hart 5 missing from the parked mask.
 
 ## DUT results (AN7583, 720 MHz)
 

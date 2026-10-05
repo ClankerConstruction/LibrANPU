@@ -4,6 +4,7 @@
 |---|---|
 | `core.c` | DT match, image checks, load, boot handshake, halt, consumer lookup |
 | `cmd.c` | command slots, event ring drain, fault words |
+| `health.c` | devlink health reporter `fw` |
 | `devlink.c` | `devlink dev info` (ASIC, firmware, ABI, build id), resources, params |
 | `debugfs.c` | bench only: `status`, `dbg_block`, `probe`, `cmd_bench` |
 
@@ -61,6 +62,26 @@ devlink (`platform/1e900000.npu`): resources `rx_buffers` (occupancy: lent to th
 `aqm_enable`, `aqm_limit`, `aqm_target`, `aqm_delay_us`, `aqm_interval_us` (1..150000, not below
 `aqm_delay_us`), `aqm_min_frames`, `aqm_small_bytes`. The driver keeps them and sends them again
 after each attach, which starts from the defaults (on, 8192, 0, 10000, 100000, 64, 256).
+
+## Firmware faults
+
+```mermaid
+flowchart LR
+  T["trap on hart N"] --> R["trap record in the debug block, boot block fault word"]
+  R --> E["FATAL event (hart 0's own trap: fault word only)"]
+  S["hart heartbeat still for 100 ms"] --> ST["TASK_STALL event"]
+  C["command unanswered for 1 s"] --> U["unhealthy"]
+  E --> F["report once per hart: unhealthy, LIBRANPU_FATAL notifier"]
+  F --> W["health work: devlink_health_report"]
+  ST --> W
+  U --> W
+```
+
+devlink health reporter `fw`: `devlink health show|diagnose|dump show platform/1e900000.npu reporter fw`.
+The dump holds the fault (kind, hart, task, cause, PC), every hart's state, PC, heartbeat, boot
+fault word and trap record, the task counters and the trace ring, oldest first. `devlink health
+test` traps the last hart (images with the debug service). A stall leaves the NPU healthy; a trap
+or a command timeout marks it unhealthy and later commands fail.
 
 ## Zero-copy rx
 
